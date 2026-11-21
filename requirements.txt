@@ -1,0 +1,10 @@
+# Python packages
+flask>=3.0
+pdfplumber>=0.11
+reportlab>=4.0
+pillow>=10.0
+pytesseract>=0.3
+numpy>=1.26
+pytest>=8.0
+playwright>=1.40   # only for tests/test_ui.py (browser end-to-end)
+# System packages: tesseract-ocr, poppler-utils (pdftoppm)

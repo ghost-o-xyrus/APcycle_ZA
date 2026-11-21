@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice desk, Kaveri Instruments</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='3' width='26' height='26' rx='4' fill='none' stroke='%235A3FC0' stroke-width='3'/%3E%3Cpath d='M10 16l4 4 8-9' fill='none' stroke='%235A3FC0' stroke-width='3'/%3E%3C/svg%3E">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- Rubber-stamp ink: uneven edges and patchy coverage -->
+    <filter id="ink" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.2" result="rough"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.35" numOctaves="1" seed="3" result="patch"/>
+      <feColorMatrix in="patch" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -1.6 1.45" result="mask"/>
+      <feComposite in="rough" in2="mask" operator="in"/>
+    </filter>
+  </defs>
+</svg>
+
+<header class="bar">
+  <a class="brand" href="#/process">
+    <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 16l4 4 8-9" fill="none" stroke="currentColor" stroke-width="3"/></svg>
+    <span>Invoice desk</span>
+  </a>
+  <span class="company">Kaveri Instruments Pvt Ltd, accounts payable</span>
+  <nav aria-label="Main">
+    <a href="#/process" data-nav="process">Process an invoice</a>
+    <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+    <a href="#/how" data-nav="how">How it works</a>
+  </nav>
+  <span class="model" id="model-note" title="Which model reads scanned documents"></span>
+</header>
+
+<main id="view-process" class="process" hidden>
+  <aside class="inbox" aria-label="Invoices to process">
+    <h2>Invoices to process</h2>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="application/pdf,.pdf">
+      <span class="drop-title">Upload an invoice PDF</span>
+      <span class="drop-hint">or drop it here. Text PDFs and scans both work.</span>
+    </label>
+    <p class="error" id="upload-error" role="alert" hidden></p>
+    <p class="note privacy" id="upload-privacy" hidden>Scans are read by a free cloud model in this demo. Upload sample or public invoices, not confidential ones. For private reading, choose a reader on your own server under Dashboard.</p>
+    <div id="samples"></div>
+  </aside>
+
+  <section class="desk" aria-label="Document">
+    <div class="sheet-wrap" id="sheet-wrap">
+      <div class="empty" id="sheet-empty">
+        <p>Pick an invoice from the list, or upload one, to watch it being checked step by step.</p>
+      </div>
+      <figure class="sheet" id="sheet" hidden>
+        <img id="sheet-img" alt="First page of the invoice being processed">
+        <div class="stamp" id="stamp" hidden aria-hidden="true">
+          <span class="stamp-word" id="stamp-word"></span>
+          <span class="stamp-meta" id="stamp-meta"></span>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <section class="run" aria-label="Run">
+    <div class="run-head">
+      <h2 id="run-title">Run</h2>
+      <span class="run-file" id="run-file"></span>
+    </div>
+    <ol class="stages" id="stages" aria-live="polite"></ol>
+    <div class="decision" id="decision" hidden aria-live="polite"></div>
+  </section>
+
+  <section class="details" id="details" hidden aria-label="Run details">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="checks" aria-selected="true">All checks</button>
+      <button role="tab" data-tab="fields" aria-selected="false">What was read</button>
+      <button role="tab" data-tab="lines" aria-selected="false">Lines against the PO</button>
+      <button role="tab" data-tab="history" aria-selected="false">History</button>
+    </div>
+    <div class="tab-body" id="tab-body"></div>
+  </section>
+</main>
+
+<main id="view-dashboard" class="dashboard" hidden>
+  <div class="dash-head">
+    <h1>Dashboard</h1>
+    <div class="dash-actions">
+      <button class="btn quiet" id="model-check">Test the reader</button>
+      <button class="btn" id="run-all">Run all 20 samples</button>
+      <button class="btn quiet" id="reset">Clear all runs</button>
+    </div>
+  </div>
+  <section class="reader" id="reader" aria-labelledby="reader-h">
+    <h2 id="reader-h">Reader for scanned invoices</h2>
+    <p class="sub">Text PDFs are always read on this server. Scans go to the reader chosen here. New runs use it, and each run records which reader saw the file.</p>
+    <fieldset class="reader-options" id="reader-options" aria-label="Reader"></fieldset>
+    <form class="reader-find" id="reader-find">
+      <button class="btn quiet" type="button" id="reader-scan">Find models on this machine</button>
+      <label for="reader-url">or connect to</label>
+      <input id="reader-url" placeholder="http://127.0.0.1:8104" autocomplete="off" spellcheck="false">
+      <button class="btn quiet" type="submit" id="reader-connect">Connect</button>
+    </form>
+    <p class="note" id="reader-status" aria-live="polite"></p>
+  </section>
+  <p class="progress" id="run-all-progress" hidden></p>
+  <div class="check-result" id="model-check-result" hidden aria-live="polite"></div>
+  <div id="dash"></div>
+</main>
+
+<main id="view-how" class="how" hidden>
+  <h1>How the invoice desk decides</h1>
+  <p class="lead">Each invoice goes through the same eight steps. The AI model only reads documents; every decision comes from fixed rules, so the same invoice always gets the same answer, and every hold names who should act and what to ask.</p>
+
+  <section aria-labelledby="map-h">
+    <h2 id="map-h">The process</h2>
+    <figure class="map" id="process-map"></figure>
+  </section>
+
+  <section aria-labelledby="edge-h">
+    <h2 id="edge-h">Edge cases built in</h2>
+    <p class="sub">Each one needs information beyond the invoice itself, which is where checking by hand usually fails.</p>
+    <div class="edges" id="edges"></div>
+  </section>
+
+  <section aria-labelledby="rules-h">
+    <h2 id="rules-h">Rules and thresholds</h2>
+    <p class="sub">Read live from the system's settings.</p>
+    <dl class="rules" id="rules"></dl>
+  </section>
+
+  <section aria-labelledby="assume-h">
+    <h2 id="assume-h">Assumptions</h2>
+    <ul class="plain">
+      <li>The buyer is one Indian company paying in rupees, so tax is GST: CGST + SGST within a state, IGST across states.</li>
+      <li>Most invoices do not print a PO number (about 1 in 5 real scans did), so the PO is found by matching the vendor's open POs.</li>
+      <li>Government (GeM-style) POs quote prices including tax; invoices show tax separately. Prices are compared before tax.</li>
+      <li>Goods are matched three ways (PO, goods receipt, invoice); services two ways (PO, invoice).</li>
+      <li>One file is one invoice. Bundled invoices, or pages that were not read, go to a person.</li>
+      <li>The vendor master, POs, goods receipts and past invoices are a realistic invented company; all invoices are synthetic.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="limits-h">
+    <h2 id="limits-h">What it does not do</h2>
+    <ul class="plain">
+      <li>Pay vendors, post to an ERP or code invoices to ledger accounts.</li>
+      <li>Read languages other than English, or currencies other than rupees.</li>
+      <li>Sign people in: whoever acts on a hold types their name.</li>
+      <li>Keep history across restarts on the free host: run the samples again after a restart.</li>
+      <li>The live demo reads scans with a free cloud tier, which may keep and review requests. That is fine for synthetic invoices. For real invoices, choose a private reader (NuExtract3 or Qwen3-VL on the company's own server, started with <code>scripts/serve_reader.py</code>) under Dashboard, or use a paid tier.</li>
+    </ul>
+  </section>
+</main>
+
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
