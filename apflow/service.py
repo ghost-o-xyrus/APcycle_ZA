@@ -1,0 +1,250 @@
+"""Service layer between the web app and the engine: runs, samples, human actions."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import threading
+import time
+import uuid
+from dataclasses import asdict
+from datetime import date
+
+from .company import Repo
+from .generator import build
+from .pipeline import reevaluate, run_invoice, sha256_of
+from .scenarios import scenarios
+from .schema import Extraction
+from .store import FINAL_FROM_OUTCOME, Store
+
+SAMPLE_GROUPS = [
+    ("Should pass", ("S",)),
+    ("Edge cases", ("E",)),
+    ("Should be held", ("H",)),
+    ("Should be rejected", ("R",)),
+]
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+
+class ActionError(ValueError):
+    pass
+
+
+class StandinModel:
+    """Stand-in for the vision model, for the sample scans only: returns their answer key.
+
+    Labelled as such in the interface. A real Gemini or Claude client replaces it
+    in part 6; uploads never use it.
+    """
+
+    name = "stand-in model (sample answer keys)"
+
+    def __init__(self, truths: dict):
+        self.truths = truths  # sha256 -> truth dict
+
+    def for_file(self, sha: str):
+        t = self.truths.get(sha)
+        if t is None:
+            return None
+        model = self
+
+        class _One:
+            def complete_json(self, prompt, images):
+                d = {k: v for k, v in t.items() if k not in ("layout", "scanned")}
+                d["confidence"] = {k: 0.9 for k in d}
+                return json.dumps(d)
+        return _One()
+
+
+class Service:
+    def __init__(self, data_dir: str, db_path: str | None = None, model_mode: str = "standin",
+                 as_of: date | None = None):
+        self.data_dir = data_dir
+        self.samples_dir = os.path.join(data_dir, "samples")
+        self.uploads_dir = os.path.join(data_dir, "uploads")
+        self.pages_dir = os.path.join(data_dir, "pages")
+        for d in (self.samples_dir, self.uploads_dir, self.pages_dir):
+            os.makedirs(d, exist_ok=True)
+        self.store = Store(db_path or os.path.join(data_dir, "apflow.db"))
+        self.as_of = as_of
+        self._samples = self._build_samples()
+        # Model choice: a real model (Gemini, Groq as backup) when a key is set, used for every
+        # file; otherwise the labelled stand-in for the sample scans only; or no model at all.
+        from .models import model_from_env
+        self.real_model = model_from_env(os.path.join(data_dir, "model_cache")) if model_mode in ("auto", "real") else None
+        self.model_mode = "real" if self.real_model else ("standin" if model_mode in ("auto", "standin") else "none")
+        self.model = StandinModel({s["sha256"]: s["truth"] for s in self._samples.values()}) \
+            if self.model_mode == "standin" else None
+        self._threads: dict[str, threading.Thread] = {}
+
+    # ---------- samples ----------
+    def _build_samples(self) -> dict:
+        out = {}
+        for s in scenarios():
+            pdf = os.path.join(self.samples_dir, f"{s.id}.pdf")
+            tpath = os.path.join(self.samples_dir, f"{s.id}.truth.json")
+            if not (os.path.exists(pdf) and os.path.exists(tpath)):
+                build(s.spec, self.samples_dir, s.id)
+            truth = json.load(open(tpath))
+            group = next(g for g, prefixes in SAMPLE_GROUPS if s.id[0] in prefixes)
+            out[s.id] = {"id": s.id, "title": s.title, "group": group, "scanned": s.spec.scanned,
+                         "file": pdf, "sha256": sha256_of(pdf), "truth": truth,
+                         "vendor": s.spec.vendor.name, "expect": s.expect}
+        return out
+
+    def samples(self) -> list[dict]:
+        return [{k: v for k, v in s.items() if k in ("id", "title", "group", "scanned", "vendor")}
+                for s in self._samples.values()]
+
+    # ---------- runs ----------
+    def _repo(self) -> Repo:
+        return Repo().with_ledger(self.store.ledger_entries())
+
+    def start_sample(self, sample_id: str) -> str:
+        s = self._samples.get(sample_id)
+        if not s:
+            raise ActionError(f"No sample called {sample_id}")
+        return self._start(s["file"], f"{sample_id}.pdf", sample_id)
+
+    def start_upload(self, data: bytes, file_name: str) -> str:
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise ActionError("That file is over 15 MB. Upload a single invoice PDF.")
+        if not data.startswith(b"%PDF"):
+            raise ActionError("That file is not a PDF. Upload the invoice as a PDF.")
+        safe = "".join(ch for ch in os.path.basename(file_name or "upload.pdf") if ch.isalnum() or ch in "._- ")[:80]
+        path = os.path.join(self.uploads_dir, f"{uuid.uuid4().hex[:8]}_{safe or 'upload.pdf'}")
+        with open(path, "wb") as f:
+            f.write(data)
+        return self._start(path, safe or "upload.pdf", None)
+
+    def _start(self, path: str, name: str, sample_id: str | None) -> str:
+        run_id = uuid.uuid4().hex[:10]
+        sha = sha256_of(path)
+        self.store.start_run(run_id, name, path, sha, sample_id)
+        th = threading.Thread(target=self._work, args=(run_id, path, sha), daemon=True)
+        self._threads[run_id] = th
+        th.start()
+        return run_id
+
+    def _work(self, run_id: str, path: str, sha: str):
+        try:
+            seen = self.store.find_sha(sha, exclude=run_id)
+            llm = self.real_model if self.real_model else (self.model.for_file(sha) if self.model else None)
+
+            def on_event(e):
+                d = asdict(e)
+                if e.stage == "intake" and seen:
+                    d["detail"] += f"; this exact file was processed before (run {seen['run_id']})"
+                self.store.add_event(run_id, d)
+
+            rr = run_invoice(path, self._repo(), llm=llm, as_of=self.as_of or date.today(),
+                             on_event=on_event, run_id=run_id)
+            self.store.finish_run(rr)
+        except Exception as e:  # the run fails visibly, never silently
+            self.store.add_event(run_id, {"stage": "error", "label": "Run failed", "status": "fail", "ms": 0,
+                                          "detail": f"{type(e).__name__}: {e}"})
+            self.store.fail_run(run_id, f"{type(e).__name__}: {e}")
+
+    def wait(self, run_id: str, timeout: float = 120) -> dict:
+        th = self._threads.get(run_id)
+        if th:
+            th.join(timeout)
+        return self.store.get_run(run_id)
+
+    def run_all_samples(self) -> list[str]:
+        """Process every sample in order (used to fill the dashboard for a demo)."""
+        ids = []
+        for sid in self._samples:
+            rid = self.start_sample(sid)
+            self.wait(rid)
+            ids.append(rid)
+        return ids
+
+    def model_label(self) -> str:
+        if self.real_model:
+            return self.real_model.name
+        if self.model:
+            return self.model.name
+        return "OCR only (no model): scans go to a person"
+
+    def check_model(self, sample_ids=("S05", "E3")) -> dict:
+        """Run the real model on sample scans and score it against their answer keys."""
+        from .evaluate import FIELDS, field_ok, lines_ok
+        from .extract.routes import extract_llm_route
+        if not self.real_model:
+            return {"ok": False, "error": "No model key is set. Add GEMINI_API_KEY (or GROQ_API_KEY) as a secret and restart."}
+        out = {"ok": True, "docs": []}
+        for sid in sample_ids:
+            s = self._samples[sid]
+            t0 = time.time()
+            try:
+                ex = extract_llm_route(s["file"], self.real_model)
+            except Exception as e:
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"[:600], "model": self.real_model.name}
+            wrong = [f for f in FIELDS if not field_ok(f, s["truth"].get(f), ex.get(f))]
+            hit, n = lines_ok(s["truth"]["lines"], ex.lines)
+            out["docs"].append({"sample": sid, "seconds": round(time.time() - t0, 1),
+                                "fields_right": len(FIELDS) - len(wrong), "fields": len(FIELDS),
+                                "wrong": {f: {"expected": s["truth"].get(f), "got": ex.get(f)} for f in wrong},
+                                "lines_right": hit, "lines": n})
+        out["model"] = self.real_model.name
+        return out
+
+    # ---------- human actions ----------
+    def act(self, run_id: str, action: str, reason: str = "", actor: str = "AP clerk", po: str | None = None) -> dict:
+        run = self.store.get_run(run_id)
+        if not run:
+            raise ActionError("No such run")
+        if run["state"] != "done":
+            raise ActionError("This run has not finished yet")
+        if run["final_status"] != "on_hold":
+            raise ActionError(f"Only invoices on hold can be acted on; this one is {run['final_status'].replace('_', ' ')}")
+        reason = (reason or "").strip()
+        if action == "approve":
+            if not reason:
+                raise ActionError("Give a reason for approving an invoice the checks held")
+            self.store.add_action(run_id, actor, "approve", reason, {"overrode": run["outcome"]}, "approved")
+        elif action == "reject":
+            if not reason:
+                raise ActionError("Give a reason the vendor will see")
+            self.store.add_action(run_id, actor, "reject", reason, {}, "rejected")
+        elif action == "approve_part":
+            if run["approvable"] is None:
+                raise ActionError("This invoice has no part that can be approved on its own")
+            self.store.add_action(run_id, actor, "approve_part", reason or "Approved up to the PO balance",
+                                  {"approved": run["approvable"], "held": run["held"]}, "part_approved")
+        elif action == "confirm_po":
+            if not po:
+                raise ActionError("Choose the PO to confirm")
+            repo = self._repo()
+            if po not in repo.pos:
+                raise ActionError(f"{po} is not a known PO")
+            ex = Extraction.from_dict(run["extraction"])
+            from .schema import Field
+            ex.fields["po_reference"] = Field(po, 1.0, f"confirmed by {actor}")
+            ev = (run["evaluation"] or 1) + 1
+            self.store.add_action(run_id, actor, "confirm_po", reason or f"Confirmed {po}", {"po": po})
+            self.store.add_event(run_id, {"stage": "human", "label": "PO confirmed by a person", "status": "ok",
+                                          "ms": 0, "detail": f"{actor} confirmed {po}; checks run again"}, ev)
+            rr = reevaluate(run_id, run["file_path"], run["sha256"], ex, repo, self.as_of or date.today(),
+                            on_event=lambda e: self.store.add_event(run_id, asdict(e), ev))
+            self.store.finish_run(rr, evaluation=ev)
+        else:
+            raise ActionError(f"Unknown action {action}")
+        return self.store.get_run(run_id)
+
+    # ---------- document image ----------
+    def page_png(self, run_id: str) -> str:
+        run = self.store.get_run(run_id)
+        if not run:
+            raise ActionError("No such run")
+        out = os.path.join(self.pages_dir, f"{run['sha256'][:16]}.png")
+        if not os.path.exists(out):
+            base = out[:-4]
+            subprocess.run(["pdftoppm", "-r", "110", "-png", "-singlefile", "-f", "1", "-l", "1",
+                            run["file_path"], base], check=True, timeout=60)
+        return out
+
+    def reset(self):
+        self.store.reset()

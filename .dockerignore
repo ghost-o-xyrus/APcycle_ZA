@@ -1,0 +1,7 @@
+tests/
+out/
+data/
+scripts/
+**/__pycache__/
+.pytest_cache/
+*.zip
