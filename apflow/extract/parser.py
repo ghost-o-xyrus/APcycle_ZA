@@ -16,19 +16,34 @@ from ..schema import Extraction, Field, Line
 # ---------- value patterns ----------
 # Loose on purpose: OCR reads 0 as O and Z as 2; the checksum repair fixes them later.
 GSTIN_TOKEN = re.compile(r"\b[0-9O]{2}[A-Z0-9]{10}[0-9A-Z][Z2][0-9A-Z]\b")
-MONEY = re.compile(r"(?:Rs\.?|INR|₹)?\s*(\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+\.\d{2})")
-NUMBER = re.compile(r"^(?:Rs\.?|INR|₹)?(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)$")
+CUR = r"(?:Rs\.?|INR|₹|US\$|\$|USD|€|EUR|£|GBP|¥|JPY)"
+MONEY = re.compile(CUR + r"?\s*(\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d+\.\d{2})")
+NUMBER = re.compile(r"^" + CUR + r"?(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)$")
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+def _y2(y: str) -> int:
+    y = int(y)
+    return y if y > 99 else (2000 + y if y < 70 else 1900 + y)
+
+
+# Each pattern gives candidate (year, month, day) readings, best first. Day-first is the Indian
+# norm; month-first is tried only when day-first is impossible (9/20/2020 on a US invoice).
 DATE_PATTERNS = [
-    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), lambda m: (int(m[1]), int(m[2]), int(m[3]))),
-    (re.compile(r"\b(\d{1,2})[-\s]([A-Za-z]{3})[a-z]*[-\s,]+(\d{4})\b"), lambda m: (int(m[3]), MONTHS.get(m[2].lower()[:3], 0), int(m[1]))),
-    (re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b"), lambda m: (int(m[3]), int(m[2]), int(m[1]))),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), lambda m: [(int(m[1]), int(m[2]), int(m[3]))]),
+    (re.compile(r"\b(\d{1,2})[-\s]([A-Za-z]{3})[a-z]*[-\s,]+(\d{4})\b"),
+     lambda m: [(int(m[3]), MONTHS.get(m[2].lower()[:3], 0), int(m[1]))]),
+    (re.compile(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b"),
+     lambda m: [(int(m[3]), MONTHS.get(m[1].lower()[:3], 0), int(m[2]))]),
+    (re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b"),
+     lambda m: [(int(m[3]), int(m[2]), int(m[1])), (int(m[3]), int(m[1]), int(m[2]))]),
+    (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2})\b(?![/\d])"),
+     lambda m: [(_y2(m[3]), int(m[2]), int(m[1])), (_y2(m[3]), int(m[1]), int(m[2]))]),
 ]
 DOCNO = r"([A-Z0-9][A-Z0-9/\-\.]{1,30}[A-Z0-9])"
 
 # ---------- label synonyms (written against layouts A-C and common Indian usage) ----------
 LABELS = {
-    "invoice_number": [r"invoice\s*(?:no\.?|number|#)\s*[:\-]?", r"bill\s*no\.?\s*[:\-]?", r"inv\.?\s*no\.?\s*[:\-]?"],
+    "invoice_number": [r"invoice\s*(?:no\.?|number|#)\s*[:\-]?", r"bill\s*no\.?\s*[:\-]?", r"inv\.?\s*no\.?\s*[:\-]?",
+                       r"(?<![a-z])inv\.?\s*#\s*[:\-]?"],
     "invoice_date": [r"invoice\s*date\s*[:\-]?", r"\bdated\b\s*[:\-]?", r"(?<![a-z])date\s*[:\-]?"],
     "po_reference": [r"p\.?\s*o\.?\s*(?:no\.?|number|#|ref\.?)\s*[:\-]?", r"buyer'?s\s*order\s*no\.?\s*[:\-]?",
                      r"ref\.?\s*po\s*[:\-]?", r"purchase\s*order\s*(?:no\.?|number)?\s*[:\-]?", r"order\s*no\.?\s*[:\-]?"],
@@ -38,22 +53,49 @@ LABELS = {
     "cgst": [r"cgst"],
     "sgst": [r"sgst|utgst"],
     "igst": [r"igst"],
-    "total": [r"grand\s*total", r"total\s*amount(?!\s*before)", r"amount\s*payable", r"invoice\s*total", r"balance\s*due"],
+    "total": [r"grand\s*total", r"total\s*amount(?!\s*before)", r"amount\s*payable", r"invoice\s*total", r"balance\s*due",
+              r"total\s*amount\s*due", r"amount\s*due", r"total\s*due", r"total\s*invoice(?:\s*amount)?"],
     "bank_account": [r"(?:bank\s*)?a/?c\.?\s*(?:no\.?|number)\s*[:\-]?", r"account\s*(?:no\.?|number)\s*[:\-]?"],
     "ifsc": [r"ifs(?:c)?\s*code\s*[:\-]?", r"ifsc\s*[:\-]?"],
 }
 TABLE_HEAD = re.compile(r"\b(hsn|qty|quantity|description|item)\b", re.I)
+# A document is known by its title, not by words used as field labels: real invoices carry
+# "Estimate #", "Quotation No." or "PO Number" fields that refer to other documents.
+# Order matters within a line: the more specific name wins ("Proforma Invoice" is not an invoice).
 DOC_TYPES = [
-    ("credit_note", re.compile(r"\bcredit\s*note\b|\bcredit\s*memo\b", re.I)),
-    ("quotation", re.compile(r"\bquotation\b|\bestimate\b|\bproforma\b|\bpro\s*forma\b", re.I)),
-    ("purchase_order", re.compile(r"^\s*purchase\s*order\s*$", re.I | re.M)),
-    ("delivery_challan", re.compile(r"delivery\s*challan", re.I)),
-    ("invoice", re.compile(r"\btax\s*invoice\b|\binvoice\b|\bbill\s*of\s*supply\b", re.I)),
+    ("credit_note", r"credit\s*note|credit\s*memo|credit\s*request"),
+    ("debit_note", r"debit\s*note|debit\s*memo"),
+    ("quotation", r"quotation|quote|estimate|pro\s*-?\s*forma(?:\s*invoice)?"),
+    ("purchase_order", r"purchase\s*order|sales\s*order|order\s*confirmation|purchase\s*requisition|work\s*order"
+                       r"|confirmation"),
+    ("receipt", r"(?:payment\s*|cash\s*|sales\s*)?receipt"),
+    ("delivery_challan", r"delivery\s*challan|delivery\s*note|packing\s*(?:list|slip)"),
+    ("invoice", r"(?:tax\s*|gst\s*|commercial\s*|sales\s*|service\s*)?invoice|bill\s*of\s*supply"),
 ]
+_LABEL_AFTER = re.compile(r"^\s*(?:#|no\b|no\.|nos?\b|number|num\b|n°|date|dt\b|id\b|ref|code|amount|total|"
+                          r"period|terms|due|[:/(])", re.I)
+_TYPE_RES = [(k, re.compile(r"(?<![a-z])(?:" + p + r")(?![a-z])", re.I)) for k, p in DOC_TYPES]
+_STRONG = re.compile(r"(?<![a-z])(credit\s*note|credit\s*memo|credit\s*request|debit\s*note)(?![a-z])", re.I)
+# Wording that says the money has already moved: paying this again would be a double payment.
+_PAID = re.compile(r"thank\s*you\s*for\s*your\s*payment|payment\s*received|paid\s*in\s*full|payment\s*receipt"
+                   r"|amount\s*received", re.I)
+_INVOICE_LABEL = re.compile(r"(?<![a-z])(?:invoice|inv)\.?\s*(?:#|no\b|no\.|number|date)", re.I)
+
+
+_NEGATED = re.compile(r"\bnot\s+(?:an?\s+)?$", re.I)
+
+
+def _title_in(line: str):
+    """The document type a line names as a title, ignoring uses as a field label ('Estimate #: 12')."""
+    for kind, rx in _TYPE_RES:
+        for m in rx.finditer(line):
+            if not _LABEL_AFTER.match(line[m.end():]) and not _NEGATED.search(line[:m.start()]):
+                return kind, m.group(0)
+    return None
 
 
 def to_float(s: str) -> float | None:
-    s = re.sub(r"^(Rs\.?|INR|₹)", "", s.strip()).replace(",", "")
+    s = re.sub(r"^" + CUR, "", s.strip()).strip().replace(",", "")
     try:
         return float(s)
     except ValueError:
@@ -62,25 +104,76 @@ def to_float(s: str) -> float | None:
 
 def parse_date(s: str) -> str | None:
     for pat, fn in DATE_PATTERNS:
-        m = pat.search(s)
-        if m:
-            y, mo, d = fn(m)
-            try:
-                return date(y, mo, d).isoformat()
-            except ValueError:
-                continue
+        for m in pat.finditer(s):
+            for y, mo, d in fn(m):
+                try:
+                    return date(y, mo, d).isoformat()
+                except ValueError:
+                    continue
     return None
 
 
+_CURRENCY_MARKS = [("INR", re.compile(r"₹|\bRs\.?\s?\d|\bINR\b|\brupees\b", re.I)),
+                   ("USD", re.compile(r"US\$|\$\s?\d|\bUSD\b")),
+                   ("EUR", re.compile(r"€|\bEUR\b")), ("GBP", re.compile(r"£|\bGBP\b")),
+                   ("JPY", re.compile(r"¥|\bJPY\b|\byen\b", re.I))]
+
+
+def detect_currency(text: str) -> tuple[str | None, str]:
+    """The invoice currency when the document shows one: rupees win whenever they appear."""
+    counts = {}
+    for code, rx in _CURRENCY_MARKS:
+        n = len(rx.findall(text))
+        if n:
+            counts[code] = n
+    if not counts or "INR" in counts:
+        return ("INR" if counts else None), ""
+    code = max(counts, key=counts.get)
+    return code, f"{counts[code]} amounts marked {code}"
+
+
+def classify_ex(text: str) -> tuple[str, float, str]:
+    """(kind, confidence, evidence). Titles near the top are strong; label use is not evidence."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    head = lines[:15]
+    for ln in head:
+        m = _STRONG.search(ln)
+        if m and not _NEGATED.search(ln[:m.start()]):  # "THIS IS NOT A CREDIT MEMO"
+            return ("debit_note" if "debit" in m.group(1).lower() else "credit_note"), 0.95, ln[:80]
+    for ln in head:
+        if _PAID.search(ln):
+            return "receipt", 0.95, ln[:80]
+    for ln in head:
+        t = _title_in(ln)
+        if t:
+            return t[0], 0.95, ln[:80]
+    # No title near the top: an invoice-number or invoice-date label is good evidence of an invoice.
+    for ln in lines:
+        if _INVOICE_LABEL.search(ln):
+            return "invoice", 0.7, ln[:80]
+    for ln in lines[15:]:
+        t = _title_in(ln) if len(ln) <= 40 else None  # a title further down stands alone, not mid-sentence
+        if t:
+            return t[0], 0.7, ln[:80]
+    return "unknown", 0.3, ""
+
+
 def classify(text: str) -> tuple[str, float]:
-    head = "\n".join(text.splitlines()[:12])
-    for kind, pat in DOC_TYPES:
-        if pat.search(head):
-            return kind, 0.95
-    for kind, pat in DOC_TYPES:
-        if pat.search(text):
-            return kind, 0.7
-    return "unknown", 0.3
+    kind, conf, _ = classify_ex(text)
+    return kind, conf
+
+
+_NOT_NAME = re.compile(r"\bpage\s*\d+\s*of\b|\bremit|\bbill\s*to\b|\bship\s*to\b|\bdate\b|\breport\b|\bform\b"
+                       r"|#|\bphone\b|\bfax\b|\bstation\s*:|^[^a-z]*$", re.I)
+
+
+def _looks_like_name(s: str) -> bool:
+    if not s or len(s) > 70 or _NOT_NAME.search(s):
+        return False
+    if re.search(r":\s*\S", s) or _title_in(s) or _PAID.search(s):
+        return False
+    letters = sum(ch.isalpha() for ch in s)
+    return letters >= 3 and letters >= 0.5 * len(s.replace(" ", ""))
 
 
 def _find_after(lines, patterns, value_re, skip=None):
@@ -176,12 +269,20 @@ def parse(text: str, route: str, base_conf: float = 0.95, own_gstin: str | None 
     ex = Extraction(route=route, raw_text=text)
     F = ex.fields
 
-    kind, kc = classify(text)
-    F["doc_type"] = Field(kind, kc, "")
-    # Vendor name: first line of the page, minus a document title on the same line.
+    kind, kc, kev = classify_ex(text)
+    F["doc_type"] = Field(kind, kc, kev)
+    cur, cev = detect_currency(text)
+    F["currency"] = Field(cur, base_conf if cur else 0.0, cev)
+    # Vendor name: the first line near the top that reads like a name, minus a document title
+    # on the same line. Page markers, remit-to lines, labels and titles are not names.
+    pick, conf = None, 0.0
+    for i, ln in enumerate(lines[:6]):
+        name = re.sub(r"\b(tax\s*invoice|invoice|quotation|credit\s*note|proforma)\b.*$", "", ln, flags=re.I).strip()
+        if _looks_like_name(name):
+            pick, conf = name, base_conf * (0.9 if i == 0 else 0.75)
+            break
     if lines:
-        name = re.sub(r"\b(tax\s*invoice|invoice|quotation|credit\s*note|proforma)\b.*$", "", lines[0], flags=re.I).strip()
-        F["vendor_name"] = Field(name or None, base_conf * 0.9, lines[0].strip())
+        F["vendor_name"] = Field(pick, conf, lines[0].strip())
 
     v, ev = _find_after(lines, LABELS["invoice_number"], DOCNO,
                         skip=lambda ln, m: bool(re.match(r"\s*date", ln[m.end():], re.I)))

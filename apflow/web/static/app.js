@@ -19,7 +19,7 @@ async function api(path, opts = {}) {
 const STAGES = [
   ["intake", "Receive the file"], ["read", "Read the document"], ["classify", "Check it is an invoice"],
   ["validate", "Check the document itself"], ["vendor", "Match the vendor"], ["po", "Match the purchase order"],
-  ["risk", "Look for duplicates and date problems"], ["decide", "Decide"],
+  ["risk", "Look for duplicates, date and currency problems"], ["decide", "Decide"],
 ];
 const STATUS_WORD = { approved: "Approved", part_approved: "Part approved", on_hold: "On hold", rejected: "Rejected" };
 const STAMP_WORD = { approved: "APPROVED", part_approved: "PART APPROVED", on_hold: "ON HOLD", rejected: "REJECTED" };

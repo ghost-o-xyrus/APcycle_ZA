@@ -162,6 +162,13 @@ class Store:
                                    "AND state='done' ORDER BY created_at LIMIT 1", (sha256, exclude or "")).fetchone()
             return dict(r) if r else None
 
+    def approved_files(self) -> dict:
+        """sha256 -> the earlier run, for every file a person or the rules approved (fully or in part)."""
+        with self._lock:
+            rows = self._conn.execute("SELECT run_id, sha256, created_at, invoice_number, final_status FROM runs "
+                                      "WHERE state='done' AND final_status IN ('approved','part_approved')").fetchall()
+        return {r["sha256"]: dict(r) for r in rows}
+
     # ---------- feedback into the checks ----------
     def ledger_entries(self) -> list[LedgerInvoice]:
         """Approved (or part-approved) runs become invoice history for later runs."""

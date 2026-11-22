@@ -200,3 +200,37 @@ def test_reset_clears_everything(svc):
     run(svc, "S01")
     svc.reset()
     assert svc.store.metrics()["processed"] == 0 and svc.store.ledger_entries() == []
+
+
+# ---------------- found on real invoices (DocILE) ----------------
+
+def test_an_exact_copy_of_an_approved_file_is_rejected_even_when_nothing_can_be_read(svc, monkeypatch):
+    """The file itself proves the repeat; reading the invoice number is not needed."""
+    first = run(svc, "S01")
+    assert first["final_status"] == "approved"
+    from apflow import pipeline
+    from apflow.schema import Extraction, Field
+    blank = Extraction(route="ocr", fields={"doc_type": Field("invoice", 0.95, "")})
+    monkeypatch.setattr(pipeline, "extract", lambda *a, **k: (blank, [{"route": "ocr"}]))
+    again = run(svc, "S01")
+    c14 = next(c for c in again["checks"] if c["id"] == "C14")
+    assert again["outcome"] == "REJECT" and c14["severity"] == "reject"
+    assert f"run {first['run_id']}" in c14["message"]
+
+
+def test_cannot_approve_anyway_for_an_unknown_vendor(svc, tmp_path):
+    h = run(svc, "H05")  # missing invoice number: approving would leave nothing to catch a repeat
+    with pytest.raises(ActionError, match="could not be read"):
+        svc.act(h["run_id"], "approve", "Paid on the phone")
+    assert svc.store.get_run(h["run_id"])["final_status"] == "on_hold"
+
+
+def test_cannot_approve_anyway_when_the_vendor_is_not_in_the_master(svc, monkeypatch):
+    from apflow import checks
+    real = checks.resolve_vendor
+    monkeypatch.setattr(checks, "resolve_vendor", lambda ctx: None)  # vendor stays unknown
+    h = run(svc, "S01")
+    monkeypatch.setattr(checks, "resolve_vendor", real)
+    assert h["final_status"] == "on_hold"
+    with pytest.raises(ActionError, match="not in the vendor master"):
+        svc.act(h["run_id"], "approve", "Looks fine to me")

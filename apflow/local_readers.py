@@ -40,7 +40,7 @@ LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 
 # NuExtract template: same keys as the cloud reader's JSON, so both map through one function.
 NUEXTRACT_TEMPLATE = {
-    "doc_type": ["invoice", "credit_note", "quotation", "purchase_order", "delivery_challan", "unknown"],
+    "doc_type": ["invoice", "credit_note", "debit_note", "quotation", "purchase_order", "receipt", "delivery_challan", "unknown"],
     "vendor_name": "verbatim-string",
     "vendor_gstin": "verbatim-string",
     "buyer_gstin": "verbatim-string",
@@ -54,6 +54,7 @@ NUEXTRACT_TEMPLATE = {
     "total": "number",
     "bank_account": "verbatim-string",
     "ifsc": "verbatim-string",
+    "currency": ["INR", "USD", "EUR", "GBP", "JPY", "other"],
     "lines": [{"description": "verbatim-string", "hsn": "verbatim-string", "qty": "number",
                "uom": "verbatim-string", "unit_price": "number", "amount": "number"}],
 }

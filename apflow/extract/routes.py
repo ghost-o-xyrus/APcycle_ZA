@@ -51,7 +51,8 @@ def unreadable_reason(pdf_path: str) -> str | None:
 
 def text_layer(pdf_path: str, max_pages: int = MAX_TEXT_PAGES) -> str:
     with pdfplumber.open(pdf_path) as pdf:
-        return "\n".join((p.extract_text() or "") for p in pdf.pages[:max_pages])
+        # dedupe_chars: some PDFs fake bold by printing each letter twice ("AAmmeerriiccaa").
+        return "\n".join((p.dedupe_chars().extract_text() or "") for p in pdf.pages[:max_pages])
 
 
 def page_images(pdf_path: str, dpi: int = 300, last_page: int | None = None) -> list[Image.Image]:
@@ -137,11 +138,14 @@ def extract_ocr_route(pdf_path: str) -> Extraction:
 
 # ---------------- LLM vision route ----------------
 
+NON_INVOICE = ("quotation", "credit_note", "purchase_order", "delivery_challan", "receipt")
+
 LLM_PROMPT = """You are reading one supplier invoice for an accounts payable team in India.
 Return ONLY a JSON object with these keys (null when absent, never guess):
-doc_type (invoice|credit_note|quotation|purchase_order|delivery_challan|unknown),
+doc_type (invoice|credit_note|debit_note|quotation|purchase_order|receipt|delivery_challan|unknown); judge by the document's title, not by fields such as \"Estimate #\" or \"PO Number\",
 vendor_name, vendor_gstin, buyer_gstin, invoice_number, invoice_date (YYYY-MM-DD),
 po_reference, subtotal, cgst, sgst, igst, total, bank_account, ifsc,
+currency (ISO code of the amounts as printed, e.g. INR, USD),
 lines: [{description, hsn, qty, uom, unit_price, amount}],
 confidence: {<field>: 0..1 for each header field}.
 Amounts are numbers without currency symbols or commas, pre-tax unless the key is total."""
@@ -162,6 +166,8 @@ def extraction_from_llm_json(raw: str) -> Extraction:
         v = data.get(k)
         c = float(conf.get(k, 0.85 if v not in (None, "") else 0.0))
         ex.fields[k] = Field(v, min(c, 0.9), "vision model")  # self-reported confidence is capped
+    cur = data.get("currency")
+    ex.fields["currency"] = Field(str(cur).upper()[:3] if cur else None, 0.85 if cur else 0.0, "vision model")
     for l in data.get("lines") or []:
         try:
             ex.lines.append(Line(description=str(l.get("description", "")), qty=float(l["qty"]),
@@ -252,7 +258,8 @@ def extract(pdf_path: str, llm: VisionClient | None = None, settings=SETTINGS) -
             ex.notes.append(f"OCR read the first {MAX_OCR_PAGES} of {pages} pages")
     why = needs_escalation(ex, settings)
     log[-1]["issues"] = why
-    if why and ex.get("doc_type") not in ("quotation", "credit_note", "purchase_order", "delivery_challan"):
+    settled_non_invoice = (ex.get("doc_type") in NON_INVOICE and ex.conf("doc_type") >= 0.9 and ex.route != "ocr")
+    if why and not settled_non_invoice:  # a shaky OCR guess that it is not an invoice still goes to the model
         if llm is not None:
             try:
                 ex2 = extract_llm_route(pdf_path, llm)

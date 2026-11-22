@@ -111,7 +111,7 @@ class Service:
 
     # ---------- runs ----------
     def _repo(self) -> Repo:
-        return Repo().with_ledger(self.store.ledger_entries())
+        return Repo().with_ledger(self.store.ledger_entries(), self.store.approved_files())
 
     def start_sample(self, sample_id: str) -> str:
         s = self._samples.get(sample_id)
@@ -290,6 +290,13 @@ class Service:
         if action == "approve":
             if not reason:
                 raise ActionError("Give a reason for approving an invoice the checks held")
+            failed = {c["check_id"]: c for c in run["checks"] if c["status"] == "fail"}
+            if "C07" in failed and not (failed["C07"].get("evidence") or {}).get("vendor_id"):
+                raise ActionError("This vendor is not in the vendor master, so there are no verified bank details "
+                                  "to pay. Onboard the vendor first, then process the invoice again.")
+            if "C02" in failed:
+                raise ActionError("The invoice number, date or total could not be read, so this payment could not be "
+                                  "checked for duplicates later. Ask the vendor for a corrected invoice, or reject it.")
             self.store.add_action(run_id, actor, "approve", reason, {"overrode": run["outcome"]}, "approved")
         elif action == "reject":
             if not reason:

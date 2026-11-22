@@ -26,7 +26,7 @@ STAGES = [
     ("validate", "Check the document itself", ["X01", "C02", "C03", "C04", "C05", "C06"]),
     ("vendor", "Match the vendor", ["C07", "C08"]),
     ("po", "Match the purchase order", ["C09", "C10", "C11", "C12", "C13"]),
-    ("risk", "Look for duplicates and date problems", ["C14", "C15"]),
+    ("risk", "Look for duplicates, date and currency problems", ["C14", "C15", "C16"]),
     ("decide", "Decide", []),
 ]
 LABEL = {s: l for s, l, _ in STAGES}
@@ -91,7 +91,7 @@ def _brief(c) -> dict:
 
 def _evaluate(rr: RunResult, ex: Extraction, repo: Repo, as_of: date, route_issues, emit) -> None:
     t = time.perf_counter()
-    checks, ctx = run_checks(ex, repo, as_of, route_issues)
+    checks, ctx = run_checks(ex, repo, as_of, route_issues, sha256=rr.sha256)
     ms = int((time.perf_counter() - t) * 1000)
     rr.checks = checks
     rr.vendor_id = ctx.vendor.vendor_id if ctx.vendor else None
@@ -102,15 +102,15 @@ def _evaluate(rr: RunResult, ex: Extraction, repo: Repo, as_of: date, route_issu
                   for i, (l, pl, sc) in enumerate(ctx.matches)]
     by_id = {c.id: c for c in checks}
     details = {
-        "classify": lambda: f"{ex.get('doc_type') or 'unknown'}",
+        "classify": lambda: (ex.get('doc_type') or 'unknown').replace('_', ' '),
         "validate": lambda: f"{sum(1 for i in ('X01','C02','C03','C04','C05','C06') if i in by_id and by_id[i].status == 'pass')} of 6 passed",
         "vendor": lambda: (f"{ctx.vendor.name} ({ctx.vendor.vendor_id}), by {ctx.vendor_how}" if ctx.vendor
                            else "not in vendor master"),
         "po": lambda: ({"printed": f"{ctx.po_number} (printed on invoice)",
                         "confirmed": f"{ctx.po_number} (confirmed by a person)",
                         "inferred": f"{ctx.po_number} (inferred, needs confirming)"}.get(ctx.po_how, "no PO found")),
-        "risk": lambda: "no duplicate, dates fine" if all(by_id.get(i) is None or by_id[i].status != "fail"
-                                                          for i in ("C14", "C15")) else "needs a look",
+        "risk": lambda: "no duplicate, dates and currency fine" if all(
+            by_id.get(i) is None or by_id[i].status != "fail" for i in ("C14", "C15", "C16")) else "needs a look",
     }
     for stage, label, ids in STAGES[2:-1]:
         res = [by_id[i] for i in ids if i in by_id]

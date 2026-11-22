@@ -13,7 +13,7 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 336 tests, ~75 s (browser tests skip without Chrome)
+python -m pytest                          # 368 tests, ~75 s (browser tests skip without Chrome)
 PYTHONPATH=. python scripts/run_scenarios.py -v   # 20 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```
@@ -29,7 +29,7 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | `apflow/scenarios.py` | 20 scenarios with expected decision and expected failed checks |
 | `apflow/extract/parser.py` | Label-anchored header parser; line rows accepted only if qty x rate = amount |
 | `apflow/extract/routes.py` | Text / OCR / vision-model routes and the router that escalates |
-| `apflow/checks.py` | Vendor + PO resolution and checks C01-C15, X01 |
+| `apflow/checks.py` | Vendor + PO resolution and checks C01-C16, X01 |
 | `apflow/decide.py` | Decision policy (no AI) |
 | `apflow/pipeline.py` | One run end to end, one event per stage |
 | `apflow/evaluate.py` | Field-level extraction accuracy against ground truth |
@@ -98,6 +98,36 @@ models were not run in the build sandbox (no internet, no GPU).
 - OCR route on simulated scans: 79-86% fields; escalated 100% of the time. Without a model, scans are never auto-approved (tested).
 - Mutation tests: 10 injected engine bugs caught 10/10; 10 injected store/service/API/UI bugs caught 10/10.
 - Browser end-to-end (Playwright + Chrome): 8 flows, including confirm-PO, override-needs-reason, upload error and dashboard drill-down.
+
+## Real documents (DocILE, 22 Nov)
+
+25 real business documents from the DocILE dataset (12 tax invoices, a utility bill, a receipt, a
+credit note, a debit note, a proforma, a purchase order, a sales order, an order form, 5 unlabelled;
+mostly US media invoices in dollars), scored against DocILE's own labels with
+`scripts/eval_docile.py <folder> out.json none|auto`.
+
+Without a model (text layer and OCR only):
+- Decisions: 22 held, 3 rejected, none approved. The 3 rejections are the order confirmation,
+  the purchase requisition and the sales order: none is an invoice.
+- Document type: 18 of 20 labelled documents right; the other 2 are "unknown" and held.
+- Header fields read: invoice number 5/14, date 7/16, total 4/17, line amounts 9/152. These
+  US layouts are unlike the Indian layouts the rules were written for; such files are meant
+  to go to the model (run with `auto` and a key to score it).
+
+Bugs this found and fixed:
+- Real tax invoices carrying an "Estimate #" field were rejected as quotations. Documents are
+  now classified by their title, not by words used as field labels; receipts ("thank you for
+  your payment") and debit notes are recognised; "THIS IS NOT A CREDIT MEMO" is not a credit memo.
+- A scan guessed (by OCR) to be a quotation never reached the model. Only a confident,
+  text-layer classification now skips the model.
+- Amounts in dollars or yen were read as rupees. New check C16 holds any non-rupee invoice.
+- US dates (9/20/2020, 01/11/99, MAY 21, 1999), "Inv #" numbers, "Amount Due" totals and
+  doubled bold text ("AAmmeerriiccaa") were missed; vendor names like "Page 1 of 2" or
+  "Please Remit To:" were taken as names.
+- A person could "approve anyway" an invoice from a vendor not in the vendor master, or one with
+  no readable number or total, and an exact copy of an approved file was not caught when its
+  number could not be read. Approval now needs an onboarded vendor and the required fields, and
+  an exact copy of an approved file is rejected whatever can be read from it.
 
 ## Not verified from the build sandbox
 

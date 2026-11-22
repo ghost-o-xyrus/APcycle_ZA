@@ -177,6 +177,7 @@ class Repo:
             self.po_lines.setdefault(l.po_number, []).append(l)
         self.grns = list(grns)
         self.ledger = list(ledger)
+        self.approved_files = {}  # sha256 -> earlier approved run (filled by the service)
 
     # --- lookups ---
     def vendor_by_gstin(self, gstin):
@@ -201,9 +202,11 @@ class Repo:
     def open_pos_of(self, vendor_id):
         return [p for p in self.pos.values() if p.vendor_id == vendor_id and p.status == "open"]
 
-    def with_ledger(self, extra):
-        return Repo(list(self.vendors.values()), list(self.pos.values()),
-                    [l for ls in self.po_lines.values() for l in ls], self.grns, self.ledger + list(extra), self.settings)
+    def with_ledger(self, extra, approved_files=None):
+        r = Repo(list(self.vendors.values()), list(self.pos.values()),
+                 [l for ls in self.po_lines.values() for l in ls], self.grns, self.ledger + list(extra), self.settings)
+        r.approved_files = dict(approved_files or {})
+        return r
 
 
 def export_csv(folder: str) -> None:

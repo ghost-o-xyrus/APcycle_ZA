@@ -1,4 +1,4 @@
-"""Vendor and PO resolution, line matching, and the check catalogue (C01-C15, X01).
+"""Vendor and PO resolution, line matching, and the check catalogue (C01-C16, X01).
 
 Every check returns a CheckResult with evidence. Checks never decide; decide.py
 does, from the results alone.
@@ -52,6 +52,7 @@ class Context:
     po_number: str | None = None
     po_how: str = ""  # printed | inferred | none
     po_candidates: list = field(default_factory=list)
+    sha256: str | None = None
     matches: list = field(default_factory=list)  # [(invoice Line, POLine | None, score)]
 
 
@@ -134,10 +135,14 @@ def c01_doc_type(ctx):
     if t == "credit_note":
         return R("C01", "Document type", "fail", "hold", "This is a credit note; it goes to the credit-note process",
                  {"doc_type": t}, "AP", "Apply this credit note against which open invoice?")
+    if t == "debit_note":
+        return R("C01", "Document type", "fail", "hold", "This is a supplier debit note, not an invoice",
+                 {"doc_type": t}, "AP", "Which invoice does this debit note adjust, and is the extra charge agreed?")
     if t in (None, "unknown"):
         return R("C01", "Document type", "fail", "hold", "Could not tell what this document is", {"doc_type": t},
                  "AP", "Is this an invoice? If so, check the scan; if not, discard it")
-    word = t.replace("_", " ")
+    word = {"purchase_order": "purchase order or order confirmation",
+            "receipt": "receipt for a payment already made"}.get(t, t.replace("_", " "))
     confident = ctx.ex.conf("doc_type") >= 0.9 and ctx.ex.route != "ocr"
     if confident:
         return R("C01", "Document type", "fail", "reject", f"Not an invoice: this is a {word}", {"doc_type": t},
@@ -392,6 +397,11 @@ def dup_score(ex: Extraction, inv, as_of: date, window: int, recurring: bool = F
 
 
 def c14_duplicate(ctx):
+    seen = ctx.repo.approved_files.get(ctx.sha256) if ctx.sha256 else None
+    if seen:  # the same file, byte for byte: no reading needed to know it is a repeat
+        return R("C14", "Duplicate", "fail", "reject",
+                 f"This exact file was already {seen['final_status'].replace('_', ' ')} (run {seen['run_id']})",
+                 {"run_id": seen["run_id"], "invoice_number": seen.get("invoice_number")}, "Vendor")
     if not ctx.vendor:
         return R("C14", "Duplicate", "skip", "info", "Vendor unknown")
     s = ctx.repo.settings
@@ -453,8 +463,16 @@ def x01_extraction(ctx, route_issues):
              "Check the highlighted values against the scan before this goes further")
 
 
-def run_checks(ex: Extraction, repo: Repo, as_of: date, route_issues=()) -> tuple[list, Context]:
-    ctx = Context(ex, repo, as_of)
+def c16_currency(ctx):
+    cur = ctx.ex.get("currency")
+    if cur in (None, "INR"):
+        return R("C16", "Currency", "pass", "info", "Amounts in rupees")
+    return R("C16", "Currency", "fail", "hold", f"Invoice is in {cur}, not rupees", {"currency": cur},
+             "AP", f"This is a {cur} invoice: confirm the exchange rate with Treasury and any import GST before paying")
+
+
+def run_checks(ex: Extraction, repo: Repo, as_of: date, route_issues=(), sha256: str | None = None) -> tuple[list, Context]:
+    ctx = Context(ex, repo, as_of, sha256=sha256)
     first = c01_doc_type(ctx)
     if first.status == "fail":
         return [first], ctx
@@ -469,5 +487,5 @@ def run_checks(ex: Extraction, repo: Repo, as_of: date, route_issues=()) -> tupl
         res += [c11_price(ctx), c12_quantity(ctx), c13_po_balance(ctx, sub_now)]
     else:
         res += [R(i, n, "skip", "info", "No usable PO") for i, n in (("C11", "Price"), ("C12", "Quantity"), ("C13", "PO balance"))]
-    res += [c14_duplicate(ctx), c15_dates(ctx)]
+    res += [c14_duplicate(ctx), c15_dates(ctx), c16_currency(ctx)]
     return res, ctx
