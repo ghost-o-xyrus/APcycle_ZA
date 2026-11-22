@@ -367,3 +367,7 @@ a.help { font-weight: 600; white-space: nowrap; }
 .how a:not(.btn), .reader a:not(.btn), .own a:not(.btn), .privacy a { color: var(--stamp); }
 table.spec th { font-size: 14px; }
 .own .btn, .how .btn { display: inline-block; text-decoration: none; }
+.expect-toggle { margin-left: auto; }
+.expect-sum { font-size: 14px; margin: 0 0 var(--s2); }
+.bad-ink { color: var(--bad-ink); }
+tr.miss td { background: var(--bad-bg); }

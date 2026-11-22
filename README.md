@@ -13,7 +13,7 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 443 tests, ~3 min (browser tests skip without Chrome)
+python -m pytest                          # 444 tests, ~3 min (browser tests skip without Chrome)
 PYTHONPATH=. python scripts/run_scenarios.py -v   # 25 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```

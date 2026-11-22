@@ -425,6 +425,30 @@ async function loadDashboard() {
   renderRuns(runs);
 }
 
+const OUTCOME_WORD = { APPROVE: "Approve", HOLD: "Hold", REJECT: "Reject" };
+
+// What each sample run should have decided. Samples are designed with one outcome, with two
+// honest exceptions: a sample approved earlier is a duplicate when run again (reject), and a
+// scan read by OCR alone may be held for a person instead of approved.
+function expectations(runs) {
+  const bySample = Object.fromEntries(state.samples.map((x) => [x.id, x]));
+  const out = {}, approvedBefore = new Set();
+  [...runs].filter((r) => r.state === "done").sort((a, b) => a.created_at - b.created_at).forEach((r) => {
+    const sm = bySample[r.sample_id];
+    if (!sm || !sm.expect) return;
+    let expect = sm.expect, why = "", ok;
+    if (approvedBefore.has(sm.id)) { expect = "REJECT"; why = "run before and approved: a duplicate now"; }
+    const got = r.first_outcome || r.outcome;  // the machine's decision, before any person acted
+    ok = got === expect;
+    if (!ok && expect === "APPROVE" && sm.scanned && r.route === "ocr" && got === "HOLD") {
+      ok = true; why = "a scan read by OCR alone goes to a person";
+    }
+    if (r.outcome === "APPROVE" || ["approved", "part_approved"].includes(r.final_status)) approvedBefore.add(sm.id);
+    out[r.run_id] = { expect, why, ok, got, title: sm.title };
+  });
+  return out;
+}
+
 function renderRuns(runs) {
   const f = state.runFilter;
   const opts = [[null, "All"], ["approved", "Approved"], ["part_approved", "Part approved"], ["on_hold", "On hold"], ["rejected", "Rejected"]];
@@ -434,11 +458,21 @@ function renderRuns(runs) {
   const co = $("#filters [data-clear-owner]");
   if (co) co.addEventListener("click", () => { f.owner = null; renderRuns(runs); });
   const list = runs.filter((r) => r.state === "done" && (!f.status || r.final_status === f.status) && (!f.owner || r.owner === f.owner));
-  $("#runs-table").innerHTML = `<table><thead><tr><th>When</th><th>Vendor</th><th>Invoice</th><th class="num">Total</th><th>Read by</th><th>Decision</th><th>Waiting on</th></tr></thead><tbody>
-    ${list.map((r) => `<tr class="clickable" data-run="${r.run_id}" tabindex="0"><td>${new Date(r.created_at * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</td>
+  const exp = expectations(runs);
+  const show = !!state.showExpected;
+  const graded = list.filter((r) => exp[r.run_id]);
+  const right = graded.filter((r) => exp[r.run_id].ok).length;
+  $("#filters").insertAdjacentHTML("beforeend", `<button class="chip expect-toggle" id="expect-toggle" aria-pressed="${show}">${show ? "Hide" : "Check against"} expected outcomes</button>`);
+  $("#expect-toggle").addEventListener("click", () => { state.showExpected = !show; renderRuns(runs); });
+  const cols = show ? 10 : 7;
+  $("#runs-table").innerHTML = (show ? `<p class="expect-sum">${graded.length ? `<b>${right} of ${graded.length}</b> sample runs ended as designed${right < graded.length ? `; <b class="bad-ink">${graded.length - right} did not</b> (marked below)` : ""}.` : "No sample runs in this view."} The machine's decision is compared, before any person acted on it. Uploaded files have no expected outcome.</p>` : "")
+    + `<table><thead><tr><th>When</th><th>Vendor</th><th>Invoice</th><th class="num">Total</th><th>Read by</th><th>Decision</th><th>Waiting on</th>${show ? "<th>Sample</th><th>Expected</th><th>As designed?</th>" : ""}</tr></thead><tbody>
+    ${list.map((r) => { const e = exp[r.run_id]; return `<tr class="clickable${show && e && !e.ok ? " miss" : ""}" data-run="${r.run_id}" tabindex="0"><td>${new Date(r.created_at * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</td>
       <td>${esc(r.vendor_name || "unknown")}</td><td>${esc(r.invoice_number || r.file_name)}</td><td class="num">${money(r.total, r.currency)}</td>
       <td>${esc({ text: "PDF text", ocr: "OCR", llm: "model" }[r.route] || r.route || "")}</td><td>${chip(r.final_status)}</td>
-      <td>${r.final_status === "on_hold" ? esc(r.owner) : ""}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No runs match this filter.</td></tr>'}
+      <td>${r.final_status === "on_hold" ? esc(r.owner) : ""}</td>
+      ${show ? (e ? `<td title="${esc(e.title)}">${esc(r.sample_id)}</td><td>${esc(OUTCOME_WORD[e.expect])}${e.why ? `<div class="muted">${esc(e.why)}</div>` : ""}</td>
+        <td>${e.ok ? '<span class="ok-mark">✓ Yes</span>' : `<span class="bad-ink">✗ No: ${esc(OUTCOME_WORD[e.got] || e.got)}</span>`}</td>` : '<td class="muted" colspan="3">uploaded file</td>') : ""}</tr>`; }).join("") || `<tr><td colspan="${cols}" class="muted">No runs match this filter.</td></tr>`}
   </tbody></table>`;
   $("#runs-table").querySelectorAll("[data-run]").forEach((tr) => {
     const go = () => { state.runId = null; location.hash = `#/process/${tr.dataset.run}`; };

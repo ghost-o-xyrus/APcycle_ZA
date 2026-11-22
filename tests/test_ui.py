@@ -296,3 +296,18 @@ def test_tester_journey_across_erp_and_desk(page, base_url, tmp_path):
     page.click('[data-act="recheck"]')
     page.wait_for_function("document.querySelector('#stamp-word').textContent === 'APPROVED'", timeout=15000)
     assert "ERP connected" in page.inner_text("#erp-pill")
+
+
+def test_runs_can_be_graded_against_their_designed_outcomes(page, base_url):
+    page.goto(f"{base_url}/#/dashboard")
+    page.wait_for_selector("#expect-toggle")
+    assert page.locator("#runs-table th", has_text="Expected").count() == 0  # hidden until asked
+    page.click("#expect-toggle")
+    page.wait_for_selector(".expect-sum")
+    assert page.locator("#runs-table th", has_text="As designed?").count() == 1
+    summary = page.inner_text(".expect-sum")
+    assert "sample runs ended as designed" in summary
+    # earlier tests ran S01 (approved) and R05 (rejected): both as designed
+    assert page.locator("#runs-table tr.miss").count() == 0, page.inner_text("#runs-table tr.miss")
+    page.click("#expect-toggle")
+    assert page.locator("#runs-table th", has_text="Expected").count() == 0

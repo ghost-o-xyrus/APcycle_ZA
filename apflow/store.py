@@ -53,7 +53,7 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
-        for col, decl in (("currency", "TEXT DEFAULT 'INR'"), ("entity", "TEXT")):  # stores made before these existed
+        for col, decl in (("currency", "TEXT DEFAULT 'INR'"), ("entity", "TEXT"), ("first_outcome", "TEXT")):  # stores made before these existed
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
 
@@ -100,6 +100,8 @@ class Store:
                        d.held_amount, d.approval_level, sum(e.ms for e in rr.events), evaluation,
                        json.dumps(ex.to_dict()), json.dumps(asdict(d)), json.dumps(rr.matches),
                        json.dumps(rr.route_log), getattr(rr, "currency", "INR"), getattr(rr, "entity", None), rr.run_id))
+            if evaluation == 1:  # the machine's own first decision, kept when a person's action re-evaluates
+                c.execute("UPDATE runs SET first_outcome=? WHERE run_id=?", (d.outcome, rr.run_id))
 
     def fail_run(self, run_id, error: str):
         with self.tx() as c:
@@ -149,7 +151,8 @@ class Store:
 
     def list_runs(self, outcome=None, owner=None, final_status=None, limit=500) -> list[dict]:
         q, args = "SELECT run_id, created_at, file_name, sample_id, state, route, vendor_name, invoice_number, " \
-                  "po_number, po_how, subtotal, total, currency, entity, outcome, final_status, owner, summary, total_ms, error " \
+                  "po_number, po_how, subtotal, total, currency, entity, outcome, COALESCE(first_outcome, outcome) AS first_outcome, " \
+                  "final_status, owner, summary, total_ms, error " \
                   "FROM runs WHERE 1=1", []
         for col, val in (("outcome", outcome), ("owner", owner), ("final_status", final_status)):
             if val:

@@ -128,7 +128,7 @@ class Service:
         return out
 
     def samples(self) -> list[dict]:
-        return [{k: v for k, v in s.items() if k in ("id", "title", "group", "scanned", "vendor")}
+        return [{k: v for k, v in s.items() if k in ("id", "title", "group", "scanned", "vendor", "expect")}
                 for s in self._samples.values()]
 
     # ---------- runs ----------
