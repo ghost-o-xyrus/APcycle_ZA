@@ -150,6 +150,8 @@ def run_invoice(pdf_path: str, repo: Repo | None = None, llm=None, as_of: date |
     if reason:
         return _unreadable(rr, reason, emit, t)
     ex, log = extract(pdf_path, llm=llm, settings=repo.settings)
+    if ex.route != "text":
+        reconcile_tax_numbers(ex, repo)
     rr.extraction, rr.route_log = ex, log
     issues = needs_escalation(ex, repo.settings)
     emit(StageEvent("read", "ok" if not issues else "warn", int((time.perf_counter() - t) * 1000),
@@ -158,6 +160,45 @@ def run_invoice(pdf_path: str, repo: Repo | None = None, llm=None, as_of: date |
 
     _evaluate(rr, ex, repo, as_of, issues if ex.route != "text" else [], emit)
     return rr
+
+
+def _near(a: str, b: str, limit: int = 2) -> bool:
+    """Optimal string alignment distance <= limit (counts an adjacent swap as one edit)."""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    d = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        d[i][0] = i
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            c = a[i - 1] != b[j - 1]
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[-1][-1] <= limit
+
+
+def reconcile_tax_numbers(ex: Extraction, repo: Repo):
+    """A GSTIN read from an image that fails its checksum cannot be what is printed on a real
+    invoice, so it is a misreading. If exactly one GSTIN on file (an approved vendor's, or our
+    own) is within two characters of it, that is what the scan shows: use it and say so.
+    Text-layer GSTINs are never changed: there the invoice itself is wrong."""
+    from .gstin import is_valid
+    known = {v.gstin for v in repo.vendors.values() if v.gstin and is_valid(v.gstin)}
+    known.add(repo.settings.company_gstin)
+    for k in ("vendor_gstin", "buyer_gstin"):
+        f = ex.fields.get(k)
+        if not (f and f.present and isinstance(f.value, str)) or is_valid(f.value):
+            continue
+        read = f.value.replace(" ", "").upper()
+        near = [g for g in known if _near(read, g)]
+        if len(near) == 1:
+            ex.notes.append(f"{k} read as {read}, which fails the checksum; the only close GSTIN on file is "
+                            f"{near[0]}, so the scan was misread")
+            f.value, f.evidence = near[0], f.evidence + " [corrected from the vendor master]"
+            f.confidence = 0.9
 
 
 ROUTE_WORDS = {"text": "the PDF's text", "ocr": "OCR", "llm": "the vision model"}

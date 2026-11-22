@@ -223,7 +223,9 @@ def c03_gstin_valid(ctx):
             bad.append((k, g, ctx.ex.conf(k)))
     if not bad:
         return R("C03", "GSTIN valid", "pass", "info", "Both GSTINs pass the checksum")
-    confident = all(c >= 0.9 for _, _, c in bad)
+    # Reject (telling the vendor their invoice is wrong) only when the PDF's own text says so.
+    # From a scan, a model's or OCR's confidence is not proof of what is printed.
+    confident = ctx.ex.route == "text" and all(c >= 0.9 for _, _, c in bad)
     msg = "; ".join(f"{k.replace('_', ' ')} '{g}' invalid" for k, g, _ in bad)
     if confident:
         return R("C03", "GSTIN valid", "fail", "reject", msg, {"invalid": bad}, "Vendor")
@@ -245,7 +247,7 @@ def c03_tax_ids(ctx):
         bad.append(("buyer_gstin", ex.get("buyer_gstin"), "GSTIN checksum", ex.conf("buyer_gstin"), "our"))
     if bad:
         msg = "; ".join(f"{who} tax number '{v}' fails the {why.replace(' wrong', '')}" for _, v, why, _, who in bad)
-        if all(c >= 0.9 for *_, c, _ in bad):
+        if ctx.ex.route == "text" and all(c >= 0.9 for *_, c, _ in bad):
             return R("C03", "Tax numbers valid", "fail", "reject", msg, {"invalid": bad}, "Vendor")
         return R("C03", "Tax numbers valid", "fail", "hold", msg + " (low-confidence read)", {"invalid": bad}, "AP",
                  "Check the tax number on the scan against the vendor master")
@@ -603,6 +605,20 @@ def c15_dates(ctx):
                  "Confirm the invoice date with the vendor")
     if ctx.po_number:
         po_d = date.fromisoformat(ctx.repo.pos[ctx.po_number].po_date)
+        if d < po_d and ctx.ex.route != "text" and d.day <= 12:
+            # 06/11/2026 is 6 November here; a reader that took it as June 11 put the date before the PO.
+            try:
+                swapped = date(d.year, d.day, d.month)
+            except ValueError:
+                swapped = None
+            if swapped and po_d <= swapped <= ctx.as_of:
+                f = ctx.ex.fields.get("invoice_date")
+                if f:
+                    f.value = str(swapped)
+                ctx.ex.notes.append(f"invoice date read as {d}; as day/month it is {swapped}, after the PO")
+                return R("C15", "Dates", "pass", "info",
+                         f"Invoice date {swapped} (read as {d}: day and month swapped; the printed date is day/month)",
+                         {"read": str(d), "date": str(swapped), "po_date": str(po_d)})
         if d < po_d:
             return R("C15", "Dates", "fail", "hold", f"Invoice {d} predates PO {ctx.po_number} ({po_d})",
                      {"date": str(d), "po_date": str(po_d)}, "Procurement", "Was this bought before the PO was raised?")

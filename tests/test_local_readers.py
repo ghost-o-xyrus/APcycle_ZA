@@ -441,3 +441,30 @@ def test_launcher_end_to_end_on_a_busy_machine(tmp_path, svc_and_answers):
         busy.close()
         if proc.poll() is None:
             proc.kill()
+
+
+def test_scan_misreads_by_a_model_are_not_blamed_on_the_vendor(tmp_path):
+    """Seen with Qwen3-VL 4B on the scanned happy path (S05): it swapped two letters of the GSTIN
+    (29AADCD... read as 29AAADC...) and read 06/11/2026 as June 11. Neither is on the invoice, so
+    the desk must not reject it or hold it as predating its PO."""
+    svc = Service(str(tmp_path / "m"), as_of=date(2026, 11, 20), model_mode="standin")
+    s = svc._samples["S05"]
+    good = json.loads(svc.standin.for_file(s["sha256"]).complete_json("", []))
+    bad = {**good, "vendor_gstin": "29AAADC4417K1ZI", "invoice_date": "2026-06-11"}
+
+    class Qwenish:
+        name, cache_id = "misreading model", "misread"
+        def complete_json(self, prompt, images):
+            return json.dumps(bad)
+    from apflow.pipeline import run_invoice
+    rr = run_invoice(s["file"], svc._repo(), llm=Qwenish(), as_of=date(2026, 11, 20))
+    assert rr.decision.outcome == "APPROVE", [(c.id, c.message) for c in rr.checks if c.status == "fail"]
+    assert rr.extraction.get("vendor_gstin") == "29AADCD4417K1ZI"
+    assert any("misread" in n for n in rr.extraction.notes) and any("day/month" in n for n in rr.extraction.notes)
+
+    # A misread GSTIN close to nothing on file is held for a person, not rejected to the vendor.
+    worse = {**good, "vendor_gstin": "07ZZZZZ9999Z1Z1"}
+    Qwenish.complete_json = lambda self, p, i: json.dumps(worse)
+    rr = run_invoice(s["file"], svc._repo(), llm=Qwenish(), as_of=date(2026, 11, 20))
+    c03 = next(c for c in rr.checks if c.id == "C03")
+    assert c03.status == "fail" and c03.severity == "hold" and rr.decision.outcome != "REJECT"

@@ -144,7 +144,7 @@ NON_INVOICE = ("quotation", "credit_note", "purchase_order", "delivery_challan",
 LLM_PROMPT = """You are reading one supplier invoice for an accounts payable team (India, US or Europe).
 Return ONLY a JSON object with these keys (null when absent, never guess):
 doc_type (invoice|credit_note|debit_note|quotation|purchase_order|receipt|delivery_challan|unknown); judge by the document's title, not by fields such as \"Estimate #\" or \"PO Number\",
-vendor_name, vendor_gstin, buyer_gstin, invoice_number, invoice_date (YYYY-MM-DD),
+vendor_name, vendor_gstin, buyer_gstin, invoice_number, invoice_date (YYYY-MM-DD; a numeric date like 06/11/2026 is day/month/year on Indian and European invoices, month/day/year only on US ones),
 po_reference, subtotal, cgst, sgst, igst, total, bank_account, ifsc,
 currency (ISO code of the amounts as printed, e.g. INR, USD, EUR),
 tax (VAT or sales tax amount when the invoice is not under Indian GST, else 0),
