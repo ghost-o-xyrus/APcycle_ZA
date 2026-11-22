@@ -217,7 +217,7 @@ def test_service_finds_switches_and_records_the_reader(tmp_path, registry, svc_a
     try:
         url = f"http://127.0.0.1:{srv.server_port}"
         reg(registry, url)
-        svc = Service(str(tmp_path / "s"), as_of=date(2026, 11, 20), model_mode="standin")
+        svc = Service(str(tmp_path / "s"), as_of=date(2026, 11, 20), model_mode="standin", server_readers=True)
         assert svc.reader_id == "standin" and [o["id"] for o in svc.readers()["options"]] == ["standin", "ocr"]
         d = svc.find_readers()
         rid = f"local|{url}|numind/NuExtract3"
@@ -244,7 +244,7 @@ def test_service_finds_switches_and_records_the_reader(tmp_path, registry, svc_a
 def test_connecting_by_address(tmp_path, registry, svc_and_answers):
     _, answers = svc_and_answers
     srv = serve_in_thread(free_port(), "Qwen/Qwen3-VL-4B-Instruct", answers)
-    svc = Service(str(tmp_path / "s"), model_mode="none")
+    svc = Service(str(tmp_path / "s"), model_mode="none", server_readers=True)
     try:
         d = svc.find_readers(str(srv.server_port))  # just the port works
         assert any(o.get("model") == "Qwen/Qwen3-VL-4B-Instruct" for o in d["options"])
@@ -262,10 +262,10 @@ def test_reader_api(tmp_path, registry, monkeypatch, svc_and_answers):
     srv = serve_in_thread(free_port(), "numind/NuExtract3", answers)
     try:
         reg(registry, f"http://127.0.0.1:{srv.server_port}")
-        app = create_app(Service(str(tmp_path / "a"), model_mode="standin"))
+        app = create_app(Service(str(tmp_path / "a"), model_mode="standin", server_readers=True))
         cl = app.test_client()
         r = cl.get("/api/readers").get_json()
-        assert r["current"] == "standin"
+        assert r["current"] == "standin" and r["server_scan"]
         f = cl.post("/api/readers/find", json={}).get_json()
         rid = f["found"][0]
         s = cl.post("/api/readers/select", json={"id": rid}).get_json()
@@ -285,6 +285,25 @@ def test_start_on_a_private_reader_from_the_environment(tmp_path, registry, monk
         monkeypatch.setenv("APFLOW_READER", "local")
         svc = Service(str(tmp_path / "e"), model_mode="standin")
         assert svc.reader_id.startswith("local|")
+    finally:
+        srv.shutdown()
+
+
+def test_hosted_desk_does_not_search_its_own_machine(tmp_path, registry, monkeypatch):
+    """On a hosted desk the server's machine is not the viewer's: searching it would mislead."""
+    from apflow.web.app import create_app
+    srv = serve_in_thread(free_port(), "numind/NuExtract3", {})
+    try:
+        reg(registry, f"http://127.0.0.1:{srv.server_port}")  # a model on the *host*
+        monkeypatch.delenv("APFLOW_SERVER_READERS", raising=False)
+        svc = Service(str(tmp_path / "h"), model_mode="standin")
+        assert not svc.server_readers and not svc.readers()["server_scan"]
+        with pytest.raises(ActionError, match="cannot see your computer"):
+            svc.find_readers()
+        assert create_app(svc).test_client().post("/api/readers/find", json={}).status_code == 400
+        monkeypatch.setenv("APFLOW_SERVER_READERS", "1")  # self-hosted next to the models: host = local
+        svc2 = Service(str(tmp_path / "h2"), model_mode="standin")
+        assert svc2.server_readers and svc2.find_readers()["found"]
     finally:
         srv.shutdown()
 
@@ -316,7 +335,7 @@ def test_launcher_skips_ports_in_use(launcher):
 
 class A:  # parsed arguments
     def __init__(self, **k):
-        self.model, self.size, self.backend, self.cmd, self.hf = "nuextract", "auto", "auto", None, None
+        self.model, self.backend, self.cmd, self.hf, self.origin = "nuextract", "auto", None, None, None
         self.__dict__.update(k)
 
 
@@ -345,14 +364,44 @@ def test_launcher_falls_back_when_the_gpu_is_busy(launcher):
         launcher.plan(A(), gpu_list=[], which=lambda x: None, vllm_ok=False)
 
 
-def test_launcher_sizes_qwen_to_the_machine(launcher):
-    p = launcher.plan(A(model="qwen3-vl"), gpu_list=[GPU_IDLE], which=lambda x: None, vllm_ok=True)
-    assert p["model_key"] == "qwen3-vl:8b" and "Qwen/Qwen3-VL-8B-Instruct" in launcher.command(p, "127.0.0.1", 1, A())
-    small = launcher.plan(A(model="qwen3-vl"), gpu_list=[], which={"ollama": "x"}.get, vllm_ok=False)
-    if (launcher.ram_gb() or 0) < 16:
-        assert small["model_key"] == "qwen3-vl:4b"
-    assert launcher.plan(A(model="qwen3-vl", size="4b"), gpu_list=[GPU_IDLE], which=lambda x: None,
-                         vllm_ok=True)["model_key"] == "qwen3-vl:4b"
+def test_launcher_offers_qwen_4b_only_and_prefers_the_right_backend(launcher):
+    assert set(launcher.MODELS) == {"nuextract", "qwen3-vl"}  # no 8B
+    both = {"ollama": "x", "llama-server": "y"}.get
+    q = launcher.plan(A(model="qwen3-vl"), gpu_list=[], which=both, vllm_ok=False)
+    assert q["model_key"] == "qwen3-vl" and q["backend"] == "ollama"
+    n = launcher.plan(A(), gpu_list=[], which=both, vllm_ok=False)
+    assert n["backend"] == "llama.cpp"  # NuExtract3 is most reliable there
+    v = launcher.plan(A(model="qwen3-vl"), gpu_list=[GPU_IDLE], which=lambda x: None, vllm_ok=True)
+    cmd = launcher.command(v, "127.0.0.1", 1, A(model="qwen3-vl"))
+    assert "Qwen/Qwen3-VL-4B-Instruct" in cmd
+
+
+def test_launcher_lets_the_desk_page_call_the_model(launcher):
+    o = launcher.origins(A())
+    assert o[0] == "https://apcycle-za.onrender.com" and "http://localhost:8000" in o
+    assert launcher.origins(A(origin="https://my.desk/, http://x:1"))[:2] == ["https://my.desk", "http://x:1"]
+    p = launcher.plan(A(model="qwen3-vl"), gpu_list=[], which={"ollama": "x"}.get, vllm_ok=False)
+    env = launcher.backend_env(p, "127.0.0.1", 8107, A())
+    assert env["OLLAMA_HOST"] == "127.0.0.1:8107" and env["OLLAMA_ORIGINS"].startswith("https://apcycle-za.onrender.com,")
+    v = launcher.plan(A(), gpu_list=[GPU_IDLE], which=lambda x: None, vllm_ok=True)
+    cmd = launcher.command(v, "127.0.0.1", 8105, A())
+    assert json.loads(cmd[cmd.index("--allowed-origins") + 1])[0] == "https://apcycle-za.onrender.com"
+
+
+def test_launcher_cors_check(launcher):
+    desk = "https://apcycle-za.onrender.com"
+    open_srv = serve_in_thread(free_port(), "numind/NuExtract3", {}, cors="*")
+    closed = serve_in_thread(free_port(), "numind/NuExtract3", {})
+    named = serve_in_thread(free_port(), "numind/NuExtract3", {}, cors="https://elsewhere.example")
+    try:
+        assert launcher.cors_check(f"http://127.0.0.1:{open_srv.server_port}", desk) == (True, "ok")
+        ok, why = launcher.cors_check(f"http://127.0.0.1:{closed.server_port}", desk)
+        assert not ok and "CORS" in why
+        assert not launcher.cors_check(f"http://127.0.0.1:{named.server_port}", desk)[0]
+        assert not launcher.cors_check(f"http://127.0.0.1:{free_port()}", desk)[0]
+    finally:
+        for x in (open_srv, closed, named):
+            x.shutdown()
 
 
 def test_launcher_recognises_port_clashes(launcher):
@@ -369,7 +418,7 @@ def test_launcher_end_to_end_on_a_busy_machine(tmp_path, svc_and_answers):
     busy.listen()
     p = busy.getsockname()[1]
     env = {**os.environ, "APFLOW_READERS_DIR": str(tmp_path / "readers")}
-    cmd = f'"{sys.executable}" "{FAKE}" --port {{port}} --host {{host}} --model numind/NuExtract3 --loading 1.5'
+    cmd = f'"{sys.executable}" "{FAKE}" --port {{port}} --host {{host}} --model numind/NuExtract3 --loading 1.5 --cors *'
     proc = subprocess.Popen([sys.executable, LAUNCHER, "--cmd", cmd, "--ports", f"{p}-{p + 40}"],
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
@@ -385,7 +434,7 @@ def test_launcher_end_to_end_on_a_busy_machine(tmp_path, svc_and_answers):
         assert [r["url"] for r in found if r["registered"]] == [entry["url"]]
         proc.send_signal(signal.SIGINT)
         out, _ = proc.communicate(timeout=20)
-        assert "ready: numind/NuExtract3" in out
+        assert "ready: numind/NuExtract3" in out and "checked: a page at https://apcycle-za.onrender.com" in out
         assert not list((tmp_path / "readers").glob("*.json"))
         assert lr.probe(entry["url"], timeout=0.5) is None  # the model server was stopped too
     finally:

@@ -88,3 +88,4 @@ pre { padding: 10px 12px; overflow-x: auto; }
   main { padding: 16px; }
   .wide { overflow-x: auto; }
 }
+a.help { white-space: nowrap; font-weight: 600; }

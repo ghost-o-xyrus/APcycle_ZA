@@ -15,6 +15,8 @@ WORKDIR /home/user/app
 COPY --chown=user requirements-app.txt .
 RUN pip install --no-cache-dir --user -r requirements-app.txt
 COPY --chown=user apflow ./apflow
+# The launcher testers download from the desk (How it works, part 3) to run a model on their own computer.
+COPY --chown=user scripts/serve_reader.py ./scripts/serve_reader.py
 
 # Build the sample invoices and load the ERP's records (POs, goods receipts, their documents) now,
 # so a small instance starts serving at once. The desk reads the ERP over HTTP with its token (APFLOW_ERP_URL=self).

@@ -152,39 +152,90 @@ def test_html_in_an_invoice_is_shown_as_text(page, base_url, tmp_path):
     assert page.title() != "pwned" and page.locator("#tab-body img").count() == 0
 
 
-def test_reader_panel_finds_switches_and_restores(page, base_url, tmp_path, monkeypatch):
-    """Find a private model on this machine, switch to it, see the header change, switch back."""
+def _free_port_in(lo, hi):
+    import socket
+    for p in range(lo, hi + 1):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    pytest.skip("no free port in the range the page searches")
+
+
+def test_model_on_your_computer_through_the_browser(page, base_url, tmp_path):
+    """The hosted-desk path: the page (not the server) finds a model on 127.0.0.1, connects it,
+    and a scan is then read by that model, relayed through the page."""
+    import hashlib
     import json as _json
     import socket
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(__file__))
     from fake_reader_server import serve_in_thread
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    srv = serve_in_thread(port, "numind/NuExtract3", {})
-    monkeypatch.setenv("APFLOW_READERS_DIR", str(tmp_path))
-    (tmp_path / "r.json").write_text(_json.dumps({"url": f"http://127.0.0.1:{port}", "model": "numind/NuExtract3"}))
+    from apflow.extract.routes import LazyPages
+    from apflow.models import _png_b64
+    from apflow.service import Service
+    ref = Service(str(tmp_path / "ref"), as_of=date(2026, 11, 20), model_mode="standin")
+    s = ref._samples["S05"]
+    ans = _json.loads(ref.standin.for_file(s["sha256"]).complete_json("", []))
+    ans.pop("confidence")
+    key = hashlib.sha256(_png_b64(LazyPages(s["file"])[0]).encode()).hexdigest()
+    port = _free_port_in(8100, 8120)
+    srv = serve_in_thread(port, "numind/NuExtract3", {key: ans}, require_template=True, cors="*")
+    with socket.socket() as so:  # a second server that does not allow web pages: must not be "found"
+        so.bind(("127.0.0.1", 0))
+        closed_port = so.getsockname()[1]
+    closed = serve_in_thread(closed_port, "qwen3-vl:4b", {})
     try:
         page.goto(f"{base_url}/#/dashboard")
         page.wait_for_selector("#reader-options input")
-        assert page.is_checked('input[name="reader"][value="standin"]')
-        page.click("#reader-scan")
-        page.wait_for_selector(f'.reader-opt[data-kind="private"]', timeout=15000)
-        assert "Found 1 vision model" in page.inner_text("#reader-status")
-        page.click('.reader-opt[data-kind="private"]')
-        page.wait_for_function("() => document.querySelector('#model-note').textContent.includes('NuExtract3')")
-        assert f"127.0.0.1:{port}" in page.inner_text("#model-note")
-        page.fill("#reader-url", "http://example.com:80")
-        page.click("#reader-connect")
-        page.wait_for_function("() => document.querySelector('#reader-status').textContent.includes('not this machine')")
-        page.click('.reader-opt[data-kind="standin"]')
-        page.wait_for_function("() => document.querySelector('#model-note').textContent.includes('stand-in')")
+        assert page.is_hidden("#reader-find")  # the server does not search its own machine
+        assert page.get_attribute('#local a.help', "href") == "#/how/models"
+        page.fill("#local-url", str(closed_port))
+        page.click("#local-connect")
+        page.wait_for_function("() => document.querySelector('#local-status').textContent.includes('Nothing answered')")
+        page.click("#local-scan")
+        page.wait_for_selector('.reader-opt[data-kind="browser"]', timeout=20000)
+        assert page.is_checked('input[name="reader"][value="browser"]')
+        assert "numind/NuExtract3" in page.inner_text("#local-on-text") and f"127.0.0.1:{port}" in page.inner_text("#local-on-text")
+        page.wait_for_function("() => document.querySelector('#model-note').textContent.includes('on your computer')")
         page.goto(f"{base_url}/#/process")
-        assert page.is_hidden("#upload-privacy")  # only shown while a free cloud model reads scans
-        page.errors[:] = [e for e in page.errors if "400" not in e]  # the refused address is an expected 400
+        pick(page, "S05")
+        assert stamp_text(page) == "APPROVED"
+        page.wait_for_function("() => document.querySelector('#stages').textContent.includes('through your browser')", timeout=20000)
+        assert srv.seen and "template" in srv.seen[-1]["chat_template_kwargs"]
+        # reload: the page resumes the connection without searching again
+        page.goto(f"{base_url}/#/dashboard")
+        page.reload()
+        page.wait_for_selector("#local-on:not([hidden])", timeout=20000)
+        page.click("#local-disconnect")
+        page.wait_for_function("() => document.querySelector('input[name=reader][value=standin]').checked")
+        assert page.locator('.reader-opt[data-kind="browser"]').count() == 0
     finally:
         srv.shutdown()
+        closed.shutdown()
+    page.errors[:] = [e for e in page.errors if "Failed to load resource" not in e and "CORS" not in e and "Access-Control" not in e]
+
+
+def test_instructions_open_at_the_right_part(page, base_url):
+    page.goto(f"{base_url}/#/how/erp")
+    page.wait_for_selector("#process-map svg")
+    page.wait_for_function("() => Math.abs(document.getElementById('how-erp').getBoundingClientRect().top) < 120")
+    for part in ("how-use", "how-erp", "how-models"):
+        assert page.locator(f"#{part}").count() == 1
+    assert page.locator('.toc a').count() == 3
+    page.click('.toc a[href="#/how/models"]')
+    page.wait_for_function("() => Math.abs(document.getElementById('how-models').getBoundingClientRect().top) < 120")
+    r = page.request.get(base_url + page.get_attribute('a[href="/downloads/serve_reader.py"]', "href"))
+    assert r.ok and b"def main(" in r.body()
+    assert page.locator("#sample-downloads a").count() >= 3
+    page.goto(f"{base_url}/#/process")
+    page.click('#own-invoice a[href="#/how/erp"]')
+    page.wait_for_function("() => !document.getElementById('view-how').hidden")
+    page.goto(f"{base_url}/erp/#/pos/new")
+    page.wait_for_selector("a.help")
+    assert page.get_attribute("a.help", "href") == "/#/how/erp-po"
 
 
 def test_us_invoice_shows_dollars_and_tax_numbers(page, base_url):

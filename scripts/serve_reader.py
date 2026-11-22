@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""Start a private reader (a vision model on this machine) for the invoice desk.
+"""Start a private reader (a vision model on this computer) for the invoice desk.
+
+Two models are supported, both about 4 billion parameters and Apache-2.0 licensed:
+  NuExtract3 (Numind)    --model nuextract   default; runs best under llama.cpp
+  Qwen3-VL 4B (Alibaba)  --model qwen3-vl    runs best under Ollama
 
 It never assumes a fixed port or an idle machine:
-  * picks the first free port in a range (default 8100-8199), skipping anything already
-    listening, and moves on if another program grabs the port first;
-  * on NVIDIA machines, picks the GPU with the most free memory and only claims what is free,
-    so a GPU busy with other jobs is shared rather than fought over;
-  * chooses a backend that fits: vLLM when a GPU has room, else llama.cpp (llama-server),
-    else Ollama (an Ollama server that is already running is reused);
-  * registers the server in ~/.apflow/readers so the app's "Find models on this machine"
-    finds it whatever port it got, and removes the registration when stopped (Ctrl+C).
+  * picks the first free port in a range (default 8100-8120, where the desk's page looks),
+    skipping anything already listening, and moves on if another program grabs the port first;
+  * on NVIDIA machines, picks the GPU with the most free memory and only claims what is free;
+  * chooses a backend that fits: vLLM when a GPU has room, else llama.cpp (llama-server), else Ollama;
+  * lets the hosted desk's page talk to the model (CORS): --origin is the desk's web address;
+  * registers the server in ~/.apflow/readers, so a desk running on this same computer also finds
+    it, and removes the registration when stopped (Ctrl+C).
 
 Examples:
-  python scripts/serve_reader.py                      # NuExtract3, the smaller model
-  python scripts/serve_reader.py --model qwen3-vl     # Qwen3-VL (8B, or 4B on small machines)
-  python scripts/serve_reader.py --backend ollama
-  python scripts/serve_reader.py --dry-run            # show the plan, start nothing
-  python scripts/serve_reader.py --list               # registered readers and whether they answer
-  python scripts/serve_reader.py --cmd "my-server --port {port} --host {host}"   # any other server
+  python serve_reader.py                           # NuExtract3
+  python serve_reader.py --model qwen3-vl          # Qwen3-VL 4B
+  python serve_reader.py --backend ollama
+  python serve_reader.py --origin http://localhost:8000    # a desk you run yourself
+  python serve_reader.py --dry-run                 # show the plan, start nothing
+  python serve_reader.py --list                    # registered readers and whether they answer
+  python serve_reader.py --cmd "my-server --port {port} --host {host}"    # any other server
 
-Standard library only, so it runs on a model box without the app installed.
+Then open the desk, go to Dashboard > Reader and press "Find models on my computer".
+Standard library only (Python 3.9+), so it runs without the app installed.
 """
 from __future__ import annotations
 
@@ -37,9 +42,11 @@ import time
 import urllib.error
 import urllib.request
 
+DESK = "https://apcycle-za.onrender.com"  # the hosted desk; its page calls the model from your browser
+
 MODELS = {
     "nuextract": {
-        "label": "NuExtract3 (Numind, ~4B, Apache-2.0)",
+        "label": "NuExtract3 (Numind, 4B, Apache-2.0)",
         "vllm": "numind/NuExtract3",
         "vllm_args": ["--trust-remote-code", "--limit-mm-per-prompt", '{"image": 6, "video": 0}',
                       "--chat-template-content-format", "openai", "--generation-config", "vllm",
@@ -49,26 +56,20 @@ MODELS = {
         "ollama": "hf.co/numind/NuExtract3-GGUF:Q4_K_M",
         "alias": "NuExtract3",
         "ram_gb": 6,
+        "download": "about 3.4 GB (2.7 GB model and 0.7 GB image encoder)",
+        "prefer": "llama.cpp",
     },
-    "qwen3-vl:8b": {
-        "label": "Qwen3-VL 8B Instruct (Apache-2.0)",
-        "vllm": "Qwen/Qwen3-VL-8B-Instruct",
-        "vllm_args": ["--limit-mm-per-prompt", '{"image": 2, "video": 0}', "--max-model-len", "16384"],
-        "vllm_gb": 24,
-        "gguf": "Qwen/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
-        "ollama": "qwen3-vl:8b-instruct",
-        "alias": "qwen3-vl-8b-instruct",
-        "ram_gb": 8,
-    },
-    "qwen3-vl:4b": {
-        "label": "Qwen3-VL 4B Instruct (Apache-2.0)",
+    "qwen3-vl": {
+        "label": "Qwen3-VL 4B Instruct (Alibaba, Apache-2.0)",
         "vllm": "Qwen/Qwen3-VL-4B-Instruct",
         "vllm_args": ["--limit-mm-per-prompt", '{"image": 2, "video": 0}', "--max-model-len", "16384"],
         "vllm_gb": 14,
         "gguf": "Qwen/Qwen3-VL-4B-Instruct-GGUF:Q4_K_M",
         "ollama": "qwen3-vl:4b",
         "alias": "qwen3-vl-4b-instruct",
-        "ram_gb": 5,
+        "ram_gb": 6,
+        "download": "about 3.3 GB",
+        "prefer": "ollama",
     },
 }
 
@@ -164,51 +165,42 @@ def get_json(url: str, timeout: float = 2.0):
         return None, None
 
 
-def ollama_running(urls) -> str | None:
-    for u in urls:
-        code, body = get_json(u + "/api/version", 1.0)
-        if code == 200 and isinstance(body, dict):
-            return u
-    return None
-
-
 # ---------------- plan ----------------
 
-def model_key(name: str, size: str, best_free: float, ram: float | None) -> str:
-    if name == "nuextract":
-        return "nuextract"
-    if size in ("4b", "8b"):
-        return f"qwen3-vl:{size}"
-    # auto: 8B when there is room for it, else 4B
-    room = best_free >= MODELS["qwen3-vl:8b"]["vllm_gb"] or (ram or 0) >= 16
-    return "qwen3-vl:8b" if room else "qwen3-vl:4b"
+def model_key(name: str) -> str:
+    return "qwen3-vl" if name.lower().startswith("qwen") else "nuextract"
 
 
-def plan(args, gpu_list=None, which=shutil.which, vllm_ok=None, ollama_url=None) -> dict:
+def origins(args) -> list[str]:
+    """Web pages allowed to call the model: the desk (hosted, or your own on port 8000)."""
+    given = [o.strip().rstrip("/") for o in (getattr(args, "origin", None) or DESK).split(",") if o.strip()]
+    return list(dict.fromkeys(given + ["http://localhost:8000", "http://127.0.0.1:8000"]))
+
+
+def plan(args, gpu_list=None, which=shutil.which, vllm_ok=None) -> dict:
     gpu_list = gpus() if gpu_list is None else gpu_list
     best = max(gpu_list, key=lambda g: g["free_gb"], default=None)
     best_free = best["free_gb"] if best else 0.0
     ram = ram_gb()
-    key = model_key(args.model, args.size, best_free, ram)
+    key = model_key(args.model)
     m = MODELS[key]
     vllm_ok = have_vllm() if vllm_ok is None else vllm_ok
     backend = args.backend
     if args.cmd:
         backend = "custom"
     elif backend == "auto":
+        tools = [b for b in ("llama.cpp", "ollama") if which("llama-server" if b == "llama.cpp" else b)]
         if vllm_ok and best and best_free >= m["vllm_gb"]:
             backend = "vllm"
-        elif which("llama-server"):
-            backend = "llama.cpp"
-        elif which("ollama"):
-            backend = "ollama"
+        elif tools:
+            backend = m["prefer"] if m["prefer"] in tools else tools[0]
         else:
             raise SystemExit(
                 "No model server software found. Install one of:\n"
+                "  llama.cpp: winget install llama.cpp   (Windows)  |  brew install llama.cpp   (macOS, Linux)\n"
                 "  Ollama (Windows, macOS, Linux): https://ollama.com/download\n"
-                "  llama.cpp: winget install llama.cpp | brew install llama.cpp\n"
                 "  vLLM (Linux + NVIDIA GPU): pip install vllm\n"
-                "then run this script again.")
+                "then open a new terminal and run this script again.")
     p = {"model_key": key, "model": m, "backend": backend, "gpu": best, "ram_gb": ram, "env": {}}
     if backend == "vllm":
         if not best:
@@ -220,11 +212,11 @@ def plan(args, gpu_list=None, which=shutil.which, vllm_ok=None, ollama_url=None)
                 f"{m['vllm_gb']} GB under vLLM. It may fail to start; llama.cpp or Ollama need less.")
         p["env"] = {"CUDA_VISIBLE_DEVICES": str(best["index"])}
         p["gpu_util"] = round(util, 2)
-    if backend == "ollama":
-        p["ollama_existing"] = ollama_url
+    if backend == "ollama" and key == "nuextract":
+        say("note: NuExtract3 is most reliable under llama.cpp (winget install llama.cpp, or brew install "
+            "llama.cpp). Trying Ollama.")
     if ram and ram < m["ram_gb"] and backend in ("llama.cpp", "ollama") and best_free < 4:
-        say(f"warning: {ram:.0f} GB of memory; {m['label']} needs about {m['ram_gb']} GB. Close other programs, "
-            "or use a smaller model.")
+        say(f"warning: {ram:.0f} GB of memory; {m['label']} needs about {m['ram_gb']} GB. Close other programs.")
     return p
 
 
@@ -235,15 +227,51 @@ def command(p: dict, host: str, port: int, args) -> list[str]:
     if b == "vllm":
         exe = ([shutil.which("vllm"), "serve", m["vllm"]] if shutil.which("vllm")
                else [sys.executable, "-m", "vllm.entrypoints.openai.api_server", "--model", m["vllm"]])
-        return exe + ["--host", host, "--port", str(port),
+        return exe + ["--host", host, "--port", str(port), "--allowed-origins", json.dumps(origins(args)),
                       "--gpu-memory-utilization", str(p["gpu_util"])] + m["vllm_args"]
     if b == "llama.cpp":
         ngl = "99" if p.get("gpu") and p["gpu"]["free_gb"] >= 4 else "0"
+        # llama-server answers requests from any web page (CORS) by default
         return ["llama-server", "-hf", args.hf or m["gguf"], "--host", host, "--port", str(port),
                 "--jinja", "--alias", m["alias"], "-c", "16384", "-ngl", ngl]
     if b == "ollama":
-        return ["ollama", "serve"]
+        return ["ollama", "serve"]  # its address and allowed pages come from OLLAMA_HOST and OLLAMA_ORIGINS
     raise SystemExit(f"Unknown backend {b}")
+
+
+def backend_env(p: dict, hostpart: str, port: int, args) -> dict:
+    env = {**os.environ, **p["env"]}
+    if p["backend"] == "ollama":
+        # Our own Ollama on its own port, allowing the desk's page. An Ollama already running on this
+        # computer keeps running; the two share downloaded models.
+        env["OLLAMA_HOST"] = f"{hostpart}:{port}"
+        env["OLLAMA_ORIGINS"] = ",".join(origins(args))
+    return env
+
+
+def cors_check(url: str, origin: str) -> tuple[bool, str]:
+    """Would a page at `origin` be allowed to call this server? (What the browser checks.)"""
+    def allowed(headers) -> bool:
+        a = (headers.get("Access-Control-Allow-Origin") or "").strip()
+        return a in ("*", origin)
+    try:
+        req = urllib.request.Request(url + "/v1/models", headers={"Origin": origin})
+        with DIRECT.open(req, timeout=5) as r:
+            if not allowed(r.headers):
+                return False, "the server does not allow requests from that page (no CORS header)"
+        req = urllib.request.Request(url + "/v1/chat/completions", method="OPTIONS", headers={
+            "Origin": origin, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type"})
+        try:
+            with DIRECT.open(req, timeout=5) as r:
+                ok = allowed(r.headers)
+        except urllib.error.HTTPError as e:
+            ok = e.code < 400 and allowed(e.headers)
+        return (True, "ok") if ok else (False, "the server refuses the browser's pre-check for sending a page")
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code} for a request from that page"
+    except OSError as e:
+        return False, f"could not reach the server ({e})"
 
 
 # ---------------- registry ----------------
@@ -325,10 +353,11 @@ def port_clash(text: str) -> bool:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Start a private reader for the invoice desk on a free port.")
     ap.add_argument("--model", choices=["nuextract", "qwen3-vl"], default="nuextract")
-    ap.add_argument("--size", choices=["auto", "4b", "8b"], default="auto", help="Qwen3-VL size")
     ap.add_argument("--backend", choices=["auto", "vllm", "llama.cpp", "ollama"], default="auto")
-    ap.add_argument("--host", default="127.0.0.1", help="127.0.0.1 keeps the model private to this machine")
-    ap.add_argument("--ports", default="8100-8199", help="range to pick a free port from")
+    ap.add_argument("--host", default="127.0.0.1", help="127.0.0.1 keeps the model private to this computer")
+    ap.add_argument("--ports", default="8100-8120", help="range to pick a free port from (the desk looks in 8100-8120)")
+    ap.add_argument("--origin", default=DESK, help="web address of the desk whose page will call the model "
+                    "(comma-separated for several)")
     ap.add_argument("--hf", help="override the GGUF repo for llama.cpp, e.g. owner/repo:Q4_K_M")
     ap.add_argument("--cmd", help="start any other server; {port} and {host} are filled in")
     ap.add_argument("--wait", type=float, default=1800, help="seconds to wait for the model to load")
@@ -342,30 +371,13 @@ def main(argv=None) -> int:
 
     start, _, end = args.ports.partition("-")
     start, end = int(start), int(end or start)
-    existing = None
-    if args.backend in ("auto", "ollama") and not args.cmd:
-        env_host = os.environ.get("OLLAMA_HOST", "")
-        cands = ([("http://" + env_host) if "://" not in env_host else env_host] if env_host else []) + ["http://127.0.0.1:11434"]
-        existing = ollama_running([c.rstrip("/") for c in cands])
-    p = plan(args, ollama_url=existing)
+    p = plan(args)
     m = p["model"]
     gpu = p["gpu"]
-    say(f"model: {m['label']}")
+    say(f"model: {m['label']}; first start downloads {m['download']}")
     say(f"backend: {p['backend']}" + (f" on GPU {gpu['index']} ({gpu['free_gb']:.1f} of {gpu['total_gb']:.1f} GB free, "
                                       f"{gpu['busy_pct']:.0f}% busy)" if gpu and p["backend"] == "vllm" else ""))
-
-    # Ollama already running: reuse it, just make sure the model is there.
-    if p["backend"] == "ollama" and existing:
-        say(f"using the Ollama server already running at {existing}")
-        if args.dry_run:
-            say(f"would run: ollama pull {m['ollama']}")
-            return 0
-        env = {**os.environ, "OLLAMA_HOST": existing.split("://", 1)[1]}
-        if subprocess.run(["ollama", "pull", m["ollama"]], env=env).returncode != 0:
-            say("ollama pull failed")
-            return 1
-        reg = register(existing, m["ollama"], "ollama (existing server)", None, None)
-        return hold(reg, None, existing, m["ollama"])
+    say("pages allowed to use it: " + ", ".join(origins(args)))
 
     log_dir = os.path.join(os.path.dirname(registry_dir()), "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -376,12 +388,14 @@ def main(argv=None) -> int:
         hostpart = f"[{args.host}]" if ":" in args.host else args.host
         url = f"http://{hostpart}:{port}"
         cmd = command(p, args.host, port, args)
-        env = {**os.environ, **p["env"]}
-        if p["backend"] == "ollama":
-            env["OLLAMA_HOST"] = f"{hostpart}:{port}"
+        env = backend_env(p, hostpart, port, args)
         say(f"port {port} is free")
-        say("command: " + " ".join(shlex.quote(c) for c in cmd))
+        say("command: " + " ".join(shlex.quote(c) for c in cmd)
+            + (f"  (with OLLAMA_HOST={env['OLLAMA_HOST']} OLLAMA_ORIGINS={env['OLLAMA_ORIGINS']})"
+               if p["backend"] == "ollama" else ""))
         if args.dry_run:
+            if p["backend"] == "ollama":
+                say(f"then: ollama pull {m['ollama']}")
             return 0
         log_path = os.path.join(log_dir, f"reader-{port}.log")
         log = open(log_path, "w")
@@ -400,9 +414,10 @@ def main(argv=None) -> int:
                     continue
                 say("Ollama did not start:\n" + tail(log_path))
                 return 1
-            say(f"pulling {m['ollama']} (first time only)")
+            say(f"downloading {m['ollama']} if needed ({m['download']}, first time only)")
             if subprocess.run(["ollama", "pull", m["ollama"]], env=env).returncode != 0:
                 stop(proc)
+                say("ollama pull failed")
                 return 1
             mid = m["ollama"]
         else:
@@ -417,7 +432,13 @@ def main(argv=None) -> int:
             say("the server did not come up. Last lines of its log:\n" + out)
             return 1
         reg = register(url, mid, p["backend"], proc.pid, log_path)
-        return hold(reg, proc, url, mid)
+        ok, why = cors_check(url, origins(args)[0])
+        if ok:
+            say(f"checked: a page at {origins(args)[0]} may call this model")
+        else:
+            say(f"warning: a page at {origins(args)[0]} will be refused: {why}. "
+                "See How it works > Private models > Troubleshooting on the desk.")
+        return hold(reg, proc, url, mid, origins(args)[0])
     say("gave up after 5 ports were taken while starting")
     return 1
 
@@ -443,7 +464,7 @@ def stop(proc):
         proc.kill()
 
 
-def hold(reg_path: str, proc, url: str, model: str) -> int:
+def hold(reg_path: str, proc, url: str, model: str, desk: str = DESK) -> int:
     """Keep the reader registered until it stops or the user presses Ctrl+C."""
     def cleanup(*_):
         try:
@@ -461,8 +482,9 @@ def hold(reg_path: str, proc, url: str, model: str) -> int:
         signal.signal(signal.SIGTERM, on_signal)
 
     say(f"ready: {model} at {url}")
-    say("In the invoice desk: Dashboard > Reader > Find models on this machine "
-        f"(or connect to {url}). Press Ctrl+C to stop.")
+    say(f"Now open {desk}/#/dashboard and press \"Find models on my computer\" under Reader")
+    say(f"(or type {url} in its address box). If Chrome asks to let the site reach devices on your")
+    say("network or this computer, choose Allow. Keep this window open; press Ctrl+C to stop the model.")
     while True:
         if proc is not None and proc.poll() is not None:
             say(f"the server stopped (exit code {proc.returncode})")

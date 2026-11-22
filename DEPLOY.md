@@ -59,8 +59,11 @@ and deploy. The free tier gives 512 MB, which is enough (the app peaks around
   service restarts after being idle.
 
 - **Readers.** The public demo reads scans with the free Gemini tier. Private readers
-  (NuExtract3, Qwen3-VL) need a machine you control: run the app on it and start
-  `scripts/serve_reader.py` (see README). Render's free plan cannot host a model (512 MB).
+  (NuExtract3, Qwen3-VL 4B) run on the tester's own computer: they start
+  `serve_reader.py` (downloadable from the site) and press *Find models on my computer* on the
+  Dashboard; the page relays scans to the model. Instructions: How it works, part 3. Render's
+  free plan cannot host a model (512 MB), and the server never searches its own machine unless
+  `APFLOW_SERVER_READERS=1`.
   Anyone using the public link can switch the reader for everyone; set
   `APFLOW_READER_LOCKED=1` on Render if you want to stop that during your demo.
 

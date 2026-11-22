@@ -10,6 +10,7 @@ Flags imitate real behaviour worth testing:
   --reject-response-format 400 when response_format is sent (some servers)
   --think                  wraps the answer in <think>...</think> and a ```json fence
   --loading N              /health answers 503 for the first N seconds
+  --cors ORIGIN            allow web pages from ORIGIN ("*" for any) to call it, as browsers require
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def make_server(port, model, answers, flavor="openai", require_template=False, reject_rf=False,
-                think=False, loading=0.0, host="127.0.0.1"):
+                think=False, loading=0.0, host="127.0.0.1", cors=None):
     started = time.time()
     seen = []
 
@@ -30,9 +31,23 @@ def make_server(port, model, answers, flavor="openai", require_template=False, r
         def log_message(self, *a):
             pass
 
+        def _cors(self):
+            if cors:
+                self.send_header("Access-Control-Allow-Origin", cors)
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "content-type, authorization")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+
+        def do_OPTIONS(self):
+            self.send_response(204 if cors else 403)
+            self._cors()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def _send(self, code, obj):
             b = json.dumps(obj).encode()
             self.send_response(code)
+            self._cors()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
@@ -89,7 +104,8 @@ if __name__ == "__main__":
     ap.add_argument("--reject-response-format", action="store_true")
     ap.add_argument("--think", action="store_true")
     ap.add_argument("--loading", type=float, default=0.0)
+    ap.add_argument("--cors")
     a = ap.parse_args()
     answers = json.load(open(a.answers)) if a.answers else {}
     make_server(a.port, a.model, answers, a.flavor, a.require_template, a.reject_response_format,
-                a.think, a.loading, a.host).serve_forever()
+                a.think, a.loading, a.host, a.cors).serve_forever()

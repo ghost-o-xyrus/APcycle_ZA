@@ -13,7 +13,7 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 429 tests, ~75 s (browser tests skip without Chrome)
+python -m pytest                          # 442 tests, ~3 min (browser tests skip without Chrome)
 PYTHONPATH=. python scripts/run_scenarios.py -v   # 25 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```
@@ -41,7 +41,8 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | `apflow/service.py` | Runs in background threads, samples, uploads (validated), human actions (approve, reject, part-approve, confirm PO) |
 | `apflow/web/app.py` | Flask API + live stage stream (server-sent events) |
 | `apflow/local_readers.py` | Private readers: finds vision models on this machine (registered or on usual ports), NuExtract3 and Qwen3-VL clients |
-| `scripts/serve_reader.py` | Starts a private reader on a free port, on the least busy GPU, and registers it (standard library only) |
+| `scripts/serve_reader.py` | Starts a private reader on a free port, on the least busy GPU, lets the desk page call it, and registers it (standard library only; also served at `/downloads/serve_reader.py`) |
+| `apflow/relay.py`, `apflow/web/static/local-model.js` | A model on the viewer's computer, reached through their open desk page |
 | `apflow/money.py` | Rupee amounts in Indian grouping (₹1,47,500.00) |
 | `apflow/web/static/` | The interface: desk (live run, stamp, decision, details) and dashboard; bundled OFL fonts |
 
@@ -100,18 +101,33 @@ invoice without the supplier's VAT ID. `invoice-desk-india-only.zip` is the Indi
 
 ## Private readers (no cloud)
 
-Scanned invoices can be read by an open model on the company's own machine instead of a cloud API.
-Pages then never leave that machine. Two models are supported by name:
+Scanned invoices can be read by an open model instead of a cloud API. Two are supported by name,
+both about 4B parameters and Apache-2.0:
 
-- **NuExtract3** (Numind, ~4B, Apache-2.0): built for template-based extraction. The invoice
-  template goes in `chat_template_kwargs`, as its model card says. The smaller and default choice.
-- **Qwen3-VL** (Apache-2.0, 4B or 8B Instruct): a general vision model; gets the cloud prompt.
+- **NuExtract3** (Numind): built for template-based extraction. The invoice template goes in
+  `chat_template_kwargs`, as its model card says. The default; runs best under llama.cpp.
+- **Qwen3-VL 4B Instruct**: a general vision model; gets the cloud prompt. Runs best under Ollama.
 
 Any other vision model on the same kinds of server is offered too (labelled "Vision model").
+Step-by-step instructions for testers are on the deployed site itself: **How it works, part 3**
+(`/#/how/models`), with the launcher downloadable at `/downloads/serve_reader.py`.
+
+**Hosted desk, model on your computer (the browser relay).** A hosted desk cannot reach a
+tester's laptop, but the desk page open on that laptop can. The page searches `127.0.0.1`
+(ports 8100-8120 and the usual model ports) only when the person presses *Find models on my
+computer*; Chrome asks permission first (Local Network Access). Once connected, the server
+queues each model request (`apflow/relay.py`); the page long-polls `/api/relay/next`, calls the
+local model and posts the answer to `/api/relay/answer`. Only the page that connected (it holds
+a token) receives requests. If no page is connected, a run falls back to OCR at once; a model
+that has not answered in 10 minutes (`APFLOW_RELAY_TIMEOUT`) does the same. The model server
+must allow the desk's origin (CORS): the launcher does this for Ollama (`OLLAMA_ORIGINS`) and
+vLLM (`--allowed-origins`); llama.cpp allows any origin by default. The PDF itself is still
+uploaded to the desk; for full privacy run the desk on your own machine.
 
 ```bash
 python scripts/serve_reader.py                     # NuExtract3 on the first free port from 8100
-python scripts/serve_reader.py --model qwen3-vl    # 8B if there is room, else 4B
+python scripts/serve_reader.py --model qwen3-vl    # Qwen3-VL 4B
+python scripts/serve_reader.py --origin http://localhost:8000   # a desk you run yourself
 python scripts/serve_reader.py --dry-run           # show the plan only
 python scripts/serve_reader.py --list --prune      # registered readers; drop dead ones
 ```
@@ -119,25 +135,28 @@ python scripts/serve_reader.py --list --prune      # registered readers; drop de
 The launcher does not assume an idle machine. It skips ports that are taken (and moves on if
 another program grabs the port while the model loads), runs vLLM only on the GPU with the most
 free memory and claims only that free memory, and otherwise uses llama.cpp (`llama-server`) or
-Ollama, reusing an Ollama server that is already running. It registers the server in
-`~/.apflow/readers` and removes the entry on Ctrl+C.
+its own Ollama on a free port (an Ollama already running is left alone). It allows the desk's
+page to call the model, checks that a browser would be allowed (CORS) and says so, registers the
+server in `~/.apflow/readers`, and removes the entry on Ctrl+C.
 
-In the app: **Dashboard > Reader > Find models on this machine** (registered readers first, then
-the usual ports of Ollama, vLLM, llama.cpp, LM Studio and SGLang), or type an address. Every run
-records which reader saw the file; switching reader never mixes cached answers.
+**Self-hosted desk next to the models.** When the desk runs on the same machine or network as
+the models, "the host" and "your computer" are the same, and the server can look for them itself:
+set `APFLOW_SERVER_READERS=1` and a *Find models on the desk's server* control appears. It is off
+on the hosted demo, where it would only search the host's own machine.
 
 | Env | Effect |
 | --- | --- |
-| `APFLOW_READER=local` | start on the first private model found (or give an address) |
-| `APFLOW_READER_HOSTS=gpu-box` | allow model servers on other hosts; by default only this machine, so a public deployment cannot be used to probe a network |
+| `APFLOW_SERVER_READERS=1` | let the server search its own machine for models (self-hosted only) |
+| `APFLOW_READER=local` | start on the first private model the server finds (or give an address); implies the above |
+| `APFLOW_READER_HOSTS=gpu-box` | allow server-side model connections to other hosts; by default only this machine, so a public deployment cannot be used to probe a network |
 | `APFLOW_READERS_DIR` | registry folder (default `~/.apflow/readers`) |
-| `APFLOW_READER_LOCKED=1` | nobody can switch the reader from the interface |
-| `APFLOW_LOCAL_TIMEOUT` | seconds per page read (default 300; CPU-only machines are slow) |
+| `APFLOW_READER_LOCKED=1` | nobody can switch the reader from the interface (also blocks the browser relay) |
+| `APFLOW_LOCAL_TIMEOUT` | seconds per page read on a server-side reader (default 300) |
+| `APFLOW_RELAY_TIMEOUT` | seconds to wait for a model on the viewer's computer (default 600) |
 
-Run the app directly (not in Docker) to find readers on the same machine, or list the
-model host in `APFLOW_READER_HOSTS` (for Docker on a desktop: `host.docker.internal`).
-Tested against stand-in servers that speak the vLLM/llama.cpp and Ollama APIs; the real
-models were not run in the build sandbox (no internet, no GPU).
+Tested against stand-in servers that speak the vLLM/llama.cpp and Ollama APIs, including in a
+real Chrome talking to a CORS-enabled stand-in on 127.0.0.1; the real models were not run in
+the build sandbox (no internet, no GPU).
 
 ## Results (this build)
 

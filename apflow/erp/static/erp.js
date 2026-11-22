@@ -15,6 +15,8 @@ async function api(path, opts = {}) {
 }
 const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const tag = (src) => `<span class="tag ${esc(src)}">${esc(SOURCE[src] || src)}</span>`;
+// Step-by-step instructions on the desk: file types, limits and what each field means.
+const HELP = (anchor, text = "Step-by-step instructions") => `<a class="help" href="/#/how/${anchor}" target="_blank" rel="noopener">${esc(text)} ↗</a>`;
 const docLink = (id, text = "Open document") => id ? `<a href="/erp/docs/${esc(id)}" target="_blank" rel="noopener">${esc(text)}</a>` : '<span class="muted">no document</span>';
 
 /* ---------------- routes ---------------- */
@@ -52,7 +54,7 @@ async function overview(main) {
     <p class="lead">The group's system of record. Purchasing raises purchase orders here and Stores record what arrives and is accepted. The invoice desk does not keep its own copy: it reads vendors, POs and goods receipts from here, through the ERP's API, to match every invoice three ways.</p>
     <section class="panel" aria-labelledby="t-own">
       <h2 id="t-own">Test the desk with your own invoice</h2>
-      <p class="muted" style="margin:0">An invoice is paid only if its PO and goods receipt agree with it. Put them here first, then upload the invoice.</p>
+      <p class="muted" style="margin:0">An invoice is paid only if its PO and goods receipt agree with it. Put them here first, then upload the invoice. ${HELP("erp", "Read the full instructions: file types, limits, every field")}</p>
       <ol class="steps">
         <li><b>Add the vendor</b><p>Skip this if the supplier is already listed. Indian suppliers need a valid GSTIN.</p><a class="btn" href="#/vendors/new">Add a vendor</a></li>
         <li><b>Add the purchase order</b><p>Upload the PO's PDF. The ERP reads it; you check and save.</p><a class="btn primary" href="#/pos/new">Add a PO</a></li>
@@ -92,7 +94,7 @@ function receivedTag(p) {
 
 async function poList(main) {
   const pos = await api("/erp/ui/pos");
-  main.innerHTML = `<div class="row spread"><div><h1>Purchase orders</h1><p class="lead">What each company ordered, from whom, at what price. Invoices are matched against these lines.</p></div>
+  main.innerHTML = `<div class="row spread"><div><h1>Purchase orders</h1><p class="lead">What each company ordered, from whom, at what price. Invoices are matched against these lines. ${HELP("erp")}</p></div>
     <a class="btn primary" href="#/pos/new">Add a purchase order</a></div>
     <div class="panel wide"><table><thead><tr><th>PO</th><th>Supplier</th><th>Company</th><th>Date</th><th class="num">Value (pre-tax)</th><th>Goods received</th><th>Status</th><th>Source</th></tr></thead><tbody>
     ${pos.map((p) => `<tr class="click" data-href="#/pos/${encodeURIComponent(p.po_number)}"><td><a href="#/pos/${encodeURIComponent(p.po_number)}">${esc(p.po_number)}</a></td>
@@ -150,7 +152,7 @@ function dropZone(el, kind, onRead) {
 async function newPO(main) {
   const vendors = (await api("/erp/ui/vendors")).filter((v) => v.source !== "reference");
   main.innerHTML = `<p><a href="#/pos">← Purchase orders</a></p><h1>Add a purchase order</h1>
-    <p class="lead">Upload the PO and the ERP reads it into the form below. Check every field before saving: the invoice desk will hold invoices to exactly what is saved here.</p>
+    <p class="lead">Upload the PO and the ERP reads it into the form below. Check every field before saving: the invoice desk will hold invoices to exactly what is saved here. PDF only, up to 15 MB. ${HELP("erp-po", "What each field means")}</p>
     <section class="panel" id="upload"></section>
     <form class="panel" id="po-form" novalidate>
       <p class="read" id="read-by" hidden></p>
@@ -229,7 +231,7 @@ async function newPO(main) {
 /* ---------------- goods receipts ---------------- */
 async function receiptList(main) {
   const recs = await api("/erp/ui/receipts");
-  main.innerHTML = `<div class="row spread"><div><h1>Goods receipts</h1><p class="lead">What Stores counted and accepted against each PO. Only accepted quantities can be invoiced.</p></div>
+  main.innerHTML = `<div class="row spread"><div><h1>Goods receipts</h1><p class="lead">What Stores counted and accepted against each PO. Only accepted quantities can be invoiced. ${HELP("erp-receipt")}</p></div>
     <a class="btn primary" href="#/receipts/new">Record a goods receipt</a></div>
     <div class="panel wide"><table><thead><tr><th>Receipt</th><th>PO</th><th>Supplier</th><th>Date</th><th>What arrived</th><th>By</th><th>Source</th><th>Document</th></tr></thead><tbody>
     ${recs.map((r) => `<tr><td>${esc(r.receipt_no)}</td><td><a href="#/pos/${encodeURIComponent(r.po_number)}">${esc(r.po_number)}</a></td><td>${esc(r.vendor_name || "")}</td><td>${esc(r.receipt_date)}</td>
@@ -241,7 +243,7 @@ async function receiptList(main) {
 async function newReceipt(main, poParam) {
   const pos = (await api("/erp/ui/pos")).filter((p) => p.status === "open" && !p.external_buyer);
   main.innerHTML = `<p><a href="#/receipts">← Goods receipts</a></p><h1>Record a goods receipt</h1>
-    <p class="lead">What arrived against a PO, and how much passed inspection. Upload the receipt to fill the form, or enter the quantities.</p>
+    <p class="lead">What arrived against a PO, and how much passed inspection. Upload the receipt to fill the form, or enter the quantities. PDF only, up to 15 MB. ${HELP("erp-receipt", "Rules for receipts")}</p>
     <section class="panel" id="upload"></section>
     <form class="panel" id="r-form" novalidate>
       <p class="read" id="read-by" hidden></p>
@@ -302,7 +304,7 @@ async function newReceipt(main, poParam) {
 /* ---------------- vendors ---------------- */
 async function vendorList(main) {
   const vs = await api("/erp/ui/vendors");
-  main.innerHTML = `<div class="row spread"><div><h1>Vendors</h1><p class="lead">The vendor master: who may be paid, and to which bank account. An invoice whose bank details differ from these is held.</p></div>
+  main.innerHTML = `<div class="row spread"><div><h1>Vendors</h1><p class="lead">The vendor master: who may be paid, and to which bank account. An invoice whose bank details differ from these is held. ${HELP("erp-vendor")}</p></div>
     <a class="btn primary" href="#/vendors/new">Add a vendor</a></div>
     <div class="panel wide"><table><thead><tr><th>ID</th><th>Name</th><th>Country</th><th>GSTIN or tax number</th><th>Currency</th><th>Bank account</th><th>Bank code</th><th>Status</th><th>Source</th></tr></thead><tbody>
     ${vs.map((v) => `<tr><td>${esc(v.vendor_id)}</td><td>${esc(v.name)}</td><td>${esc(v.country)}</td><td>${esc(v.gstin || v.tax_id || "")}</td><td>${esc(v.currency)}</td>
@@ -312,7 +314,7 @@ async function vendorList(main) {
 
 async function newVendor(main) {
   main.innerHTML = `<p><a href="#/vendors">← Vendors</a></p><h1>Add a vendor</h1>
-    <p class="lead">Copy the bank details from the supplier's invoice or onboarding form: the desk pays only to the account on file.</p>
+    <p class="lead">Copy the bank details from the supplier's invoice or onboarding form: the desk pays only to the account on file. ${HELP("erp-vendor", "Tax numbers and bank details accepted")}</p>
     <form class="panel" id="v-form" novalidate><div class="grid">
       <label class="f">Name<input name="name" required></label>
       <label class="f">Country<select name="country"><option value="IN">India</option><option value="US">United States</option><option value="DE">Germany</option><option value="FR">France</option><option value="GB">United Kingdom</option></select></label>
@@ -338,7 +340,7 @@ async function integration(main) {
   const o = await api("/erp/ui/overview"), i = o.integration;
   const when = i.desk_last_sync ? new Date(i.desk_last_sync * 1000).toLocaleString("en-IN", { timeStyle: "medium", dateStyle: "medium" }) : "not yet";
   main.innerHTML = `<h1>Integration</h1>
-    <p class="lead">How the invoice desk reads this ERP: the way an AP automation product connects to a client's NetSuite or SAP. The client's administrator issues an integration token; the product reads vendors, POs and receipts through the API with it, and never sees the ERP's screens.</p>
+    <p class="lead">How the invoice desk reads this ERP: the way an AP automation product connects to a client's NetSuite or SAP. The client's administrator issues an integration token; the product reads vendors, POs and receipts through the API with it, and never sees the ERP's screens. ${HELP("erp-api", "API notes")}</p>
     <section class="panel"><dl class="kv">
       <dt>API base</dt><dd><code>${esc(i.base)}</code></dd>
       <dt>Records</dt><dd><code>vendor</code>, <code>purchaseOrder</code>, <code>itemReceipt</code>; receive goods with <code>POST purchaseOrder/{id}/!transform/itemReceipt</code></dd>

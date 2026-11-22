@@ -312,3 +312,58 @@ table.three-way td { vertical-align: top; font-size: 13px; line-height: 1.45; }
 table.three-way td > div + div { margin-top: 2px; }
 .ok-mark { color: var(--good-ink); }
 .wide { overflow-x: auto; }
+
+/* ---------- instructions (How it works) ---------- */
+.how h3 { font-size: 16px; margin: var(--s6) 0 var(--s2); }
+.how p { max-width: 72ch; }
+.toc { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s3); margin: 0 0 var(--s7); }
+.toc a { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) var(--s4); background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-md); color: var(--ink); text-decoration: none; }
+.toc a:hover { border-color: var(--stamp); }
+.toc a:focus-visible { outline: 2px solid var(--stamp); outline-offset: 2px; }
+.toc b { display: block; font-size: 14.5px; }
+.toc small { display: block; color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
+.toc-n { flex: none; width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--stamp); color: var(--stamp); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+.how .part { border-top: 2px solid var(--ink); padding-top: var(--s5); scroll-margin-top: 72px; }
+.how .part > h2 { font-size: 26px; margin-bottom: var(--s4); }
+.part-n { color: var(--stamp); font-weight: 700; font-size: 14px; margin: 0 0 2px; }
+.how [id^="how-"] { scroll-margin-top: 72px; }
+.flash { animation: flash 1.6s ease-out; }
+@keyframes flash { from { background: var(--stamp-soft); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+dl.pairs { display: grid; grid-template-columns: minmax(150px, 200px) 1fr; gap: var(--s3) var(--s5); margin: 0 0 var(--s3); font-size: 14.5px; }
+dl.pairs dt { font-weight: 700; }
+dl.pairs dd { margin: 0; max-width: 68ch; }
+ol.steps { margin: 0; padding-left: 22px; max-width: 76ch; font-size: 14.5px; }
+ol.steps > li { margin-bottom: var(--s3); padding-left: 4px; }
+ol.steps.big > li { margin-bottom: var(--s5); }
+ol.steps > li::marker { font-weight: 700; color: var(--stamp); }
+table.spec { border-collapse: collapse; width: 100%; max-width: 820px; margin: var(--s3) 0; font-size: 14px; background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-sm); }
+table.spec th, table.spec td { text-align: left; vertical-align: top; padding: 8px 12px; border-top: 1px solid var(--rule-2); }
+table.spec tr:first-child th, table.spec tr:first-child td { border-top: 0; }
+table.spec th { width: 190px; font-weight: 700; color: var(--ink); }
+.callout { border-left: 4px solid var(--stamp); background: var(--stamp-soft); padding: var(--s3) var(--s4); margin: var(--s4) 0 var(--s5); max-width: 76ch; font-size: 14.5px; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.how code { font-size: 13px; background: var(--rule-2); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+.how pre { margin: 6px 0; padding: 8px 12px; background: var(--ink); color: var(--paper); border-radius: var(--r-sm); overflow-x: auto; max-width: 640px; }
+.how pre code { background: none; color: inherit; padding: 0; font-size: 13px; }
+details.more { margin: var(--s3) 0; max-width: 820px; border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--panel); padding: var(--s2) var(--s4); }
+details.more summary { cursor: pointer; font-weight: 700; font-size: 14.5px; padding: 4px 0; }
+details.more[open] summary { margin-bottom: var(--s2); }
+.btn.small { padding: 4px 10px; font-size: 12.5px; }
+.own p { margin: 0 0 6px; }
+@media (max-width: 760px) { .toc, dl.pairs { grid-template-columns: 1fr; } table.spec th { width: 110px; } }
+
+/* a model on this computer */
+.local { border-top: 1px solid var(--rule); margin-top: var(--s3); padding-top: var(--s3); }
+.local h3 { font-size: 15px; margin-bottom: 2px; }
+.local-actions, .local-form, .local-on { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.local-form label { font-size: 13px; color: var(--ink-2); }
+.local-form input { border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 8px; background: var(--panel); color: var(--ink); min-width: 220px; }
+.local-on p { margin: 0; font-size: 14px; }
+.local-found { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+.local-found .sub { flex-basis: 100%; margin: 0; }
+.tag.off { background: var(--bad-bg); color: var(--bad-ink); }
+a.help { font-weight: 600; white-space: nowrap; }
+.linklike { background: none; border: 0; padding: 0; color: var(--stamp); text-decoration: underline; cursor: pointer; font: inherit; }
+.how a:not(.btn), .reader a:not(.btn), .own a:not(.btn), .privacy a { color: var(--stamp); }
+table.spec th { font-size: 14px; }
+.own .btn, .how .btn { display: inline-block; text-decoration: none; }

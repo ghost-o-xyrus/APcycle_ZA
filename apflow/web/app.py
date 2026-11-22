@@ -76,6 +76,14 @@ def create_app(service: Service | None = None) -> Flask:
             "Our companies": "; ".join(f"{e.name} ({e.tax_label} {e.tax_id}, {e.currency})" for e in ENTITIES.values()),
         }.items()])
 
+    @app.get("/downloads/serve_reader.py")
+    def download_launcher():
+        """The script that starts NuExtract3 or Qwen3-VL on a tester's computer (see How it works, part 3)."""
+        here = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts")
+        if not os.path.exists(os.path.join(here, "serve_reader.py")):
+            return jsonify(error="The launcher is not included in this build"), 404
+        return send_from_directory(here, "serve_reader.py", as_attachment=True, mimetype="text/x-python")
+
     @app.get("/api/readers")
     def readers():
         return jsonify(svc.readers())
@@ -92,6 +100,38 @@ def create_app(service: Service | None = None) -> Flask:
         b = request.get_json(silent=True) or {}
         return jsonify(svc.select_reader(b.get("id", "")))
 
+    # A model on the viewer's computer: their page connects it, then fetches requests and returns answers.
+    @app.post("/api/relay/connect")
+    def relay_connect():
+        if os.environ.get("APFLOW_READER_LOCKED", "") == "1":
+            raise ActionError("The reader is fixed on this server.")
+        b = request.get_json(silent=True) or {}
+        return jsonify(svc.relay_connect(b.get("url", ""), b.get("model", ""), b.get("flavor", "openai")))
+
+    @app.post("/api/relay/next")
+    def relay_next():
+        b = request.get_json(silent=True) or {}
+        if not svc.relay.check(b.get("token")):
+            return jsonify(error="This page is no longer the one connected to the model.", replaced=True), 409
+        try:
+            wait = min(max(float(b.get("wait", 0)), 0.0), 20.0)
+        except (TypeError, ValueError):
+            wait = 0.0
+        return jsonify(request=svc.relay.next_request(wait, b.get("token")))
+
+    @app.post("/api/relay/answer")
+    def relay_answer():
+        b = request.get_json(silent=True) or {}
+        if not svc.relay.check(b.get("token")):
+            return jsonify(error="This page is no longer the one connected to the model.", replaced=True), 409
+        ok = svc.relay.answer(str(b.get("id", "")), b.get("content"), b.get("error"))
+        return jsonify(ok=ok)
+
+    @app.post("/api/relay/disconnect")
+    def relay_disconnect():
+        b = request.get_json(silent=True) or {}
+        return jsonify(svc.relay_disconnect(b.get("token", "")))
+
     @app.post("/api/model-check")
     def model_check():
         return jsonify(svc.check_model())
@@ -99,6 +139,15 @@ def create_app(service: Service | None = None) -> Flask:
     @app.get("/api/samples")
     def samples():
         return jsonify(samples=svc.samples())
+
+    @app.get("/samples/<sample_id>.pdf")
+    def sample_pdf(sample_id):
+        """A sample invoice as a file, for testers who want to try the upload path with it."""
+        s = svc._samples.get(sample_id)
+        if not s:
+            return jsonify(error="No such sample"), 404
+        return send_file(s["file"], mimetype="application/pdf", as_attachment=True,
+                         download_name=f"{sample_id}-{s['vendor'].split()[0].lower()}-invoice.pdf")
 
     @app.post("/api/runs")
     def create_run():

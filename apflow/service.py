@@ -60,7 +60,7 @@ class StandinModel:
 
 class Service:
     def __init__(self, data_dir: str, db_path: str | None = None, model_mode: str = "standin",
-                 as_of: date | None = None):
+                 as_of: date | None = None, server_readers: bool | None = None):
         self.data_dir = data_dir
         self.samples_dir = os.path.join(data_dir, "samples")
         self.uploads_dir = os.path.join(data_dir, "uploads")
@@ -82,15 +82,27 @@ class Service:
         # Readers: the cloud model (Gemini, Groq as backup) when a key is set; private models on
         # this company's own servers, found or added at run time; the labelled stand-in for the
         # sample scans; or none (OCR only). One is current; every new run uses it.
-        from .models import model_from_env
+        from .models import CachedClient, model_from_env
+        from .relay import BrowserRelay, RelayClient
         self._cache_dir = os.path.join(data_dir, "model_cache")
         self.cloud_model = model_from_env(self._cache_dir) if model_mode in ("auto", "real") else None
         self.standin = StandinModel({s["sha256"]: s["truth"] for s in self._samples.values()})
         self._allow_standin = model_mode in ("auto", "standin")
         self._local: dict[str, dict] = {}
         self._reader_lock = threading.Lock()
-        self.reader_id = "cloud" if self.cloud_model else ("standin" if self._allow_standin else "ocr")
+        # A model on the viewer's own computer, reached through the page they have open (see relay.py).
+        self.relay = BrowserRelay()
+        self._relay_client = CachedClient(RelayClient(self.relay), self._cache_dir)
+        self.default_reader = "cloud" if self.cloud_model else ("standin" if self._allow_standin else "ocr")
+        self.reader_id = self.default_reader
         want = os.environ.get("APFLOW_READER", "").strip()
+        # Looking for model servers from the server itself only makes sense when the desk runs on the
+        # same machine (or network) as the models: self-hosted, "host" and "local" are then the same
+        # machine. On a hosted demo (Render) the server would only search Render's own machine, so it
+        # is off and the viewer's browser looks on the viewer's computer instead. Kept, not deleted:
+        # set APFLOW_SERVER_READERS=1 (or APFLOW_READER) when self-hosting next to the models.
+        self.server_readers = (os.environ.get("APFLOW_SERVER_READERS", "") == "1" or bool(want)
+                               if server_readers is None else server_readers)
         if want:  # local = first private model found; or a server address
             try:
                 self.find_readers(None if want == "local" else want)
@@ -192,6 +204,8 @@ class Service:
         """The current model client (cloud or private), or None."""
         if self.reader_id == "cloud":
             return self.cloud_model
+        if self.reader_id == "browser":
+            return self._relay_client  # fails at once (and the run uses OCR) if no page is connected
         if self.reader_id in self._local:
             return self._local[self.reader_id]["client"]
         return None
@@ -209,6 +223,15 @@ class Service:
         if self.cloud_model:
             opts.append({"id": "cloud", "kind": "cloud", "label": f"Cloud: {self.cloud_model.name}",
                          "note": "Pages are sent to the cloud provider. Free tiers may keep and review what is sent."})
+        if self.relay.model:
+            live = self.relay.alive()
+            opts.append({"id": "browser", "kind": "browser", "connected": live,
+                         "label": self.relay.model["label"] + ("" if live else " (not connected)"),
+                         "model": self.relay.model["model"],
+                         "note": ("Scans go from this server to your open desk page and on to the model on your "
+                                  "computer. No AI company sees them. Keep the desk tab open while invoices run."
+                                  if live else "The page that connected it is closed or offline. Open the desk "
+                                  "on that computer and connect again; until then scans go to OCR.")})
         for rid, r in self._local.items():
             opts.append({"id": rid, "kind": "private", "label": r["label"], "model": r["model"], "url": r["url"],
                          "note": "Runs on your own server: pages never leave it."})
@@ -217,10 +240,38 @@ class Service:
                          "note": "Demo only: answers for the built-in sample scans; other scans go to OCR."})
         opts.append({"id": "ocr", "kind": "ocr", "label": "No model: OCR on this server",
                      "note": "Nothing leaves this server. Slower, and more scans go to a person."})
-        return {"current": self.reader_id, "label": self.model_label(), "options": opts}
+        return {"current": self.reader_id, "label": self.model_label(), "options": opts,
+                "server_scan": self.server_readers, "relay": self.relay.status()}
+
+    # ---------- a model on the viewer's computer, through their browser ----------
+    def relay_connect(self, url: str, model: str, flavor: str = "openai") -> dict:
+        from .local_readers import family
+        url, model = (url or "").strip(), (model or "").strip()
+        if not url.startswith(("http://", "https://")) or not model:
+            raise ActionError("Give the model server's address (for example http://127.0.0.1:8100) and a model name.")
+        if not family(model):
+            raise ActionError(f"{model} does not look like a vision model. Use NuExtract3, Qwen3-VL or another "
+                              "model that reads images.")
+        token = self.relay.connect(url, model, flavor if flavor in ("openai", "ollama") else "openai")
+        with self._reader_lock:
+            self.reader_id = "browser"
+        return {**self.readers(), "token": token}
+
+    def relay_disconnect(self, token: str) -> dict:
+        if self.relay.check(token):
+            self.relay.disconnect()
+            with self._reader_lock:
+                if self.reader_id == "browser":
+                    self.reader_id = self.default_reader
+        return self.readers()
 
     def find_readers(self, url: str | None = None) -> dict:
-        """Look for private models on this machine (and at `url` if given); add what is found."""
+        """Look for private models on the server's own machine (and at `url` if given); add what is found.
+
+        Off unless self.server_readers (see __init__): on a hosted demo the browser searches instead."""
+        if not self.server_readers:
+            raise ActionError("This desk is hosted, so it cannot see your computer. Use \"Find models on my "
+                              "computer\": your browser looks for them and passes scans to them.")
         from .local_readers import LocalClient, discover, normalise_url
         from .models import CachedClient
         extra = []
@@ -249,12 +300,14 @@ class Service:
     def select_reader(self, reader_id: str) -> dict:
         valid = {o["id"] for o in self.readers()["options"]}
         if reader_id not in valid:
-            raise ActionError("That reader is not available. Use Find local models first.")
+            raise ActionError("That reader is not available. Use Find models on my computer first.")
         with self._reader_lock:
             self.reader_id = reader_id
         return self.readers()
 
     def model_label(self) -> str:
+        if self.reader_id == "browser" and not self.relay.alive():
+            return "Model on your computer, not connected: scans go to OCR"
         if self.real_model:
             return self.real_model.name
         if self.model:

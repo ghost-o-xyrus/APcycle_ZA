@@ -46,8 +46,9 @@
       <span class="drop-hint">or drop it here. Text PDFs and scans both work.</span>
     </label>
     <p class="error" id="upload-error" role="alert" hidden></p>
-    <p class="note own" id="own-invoice">Testing your own invoice? It is paid only if its <b>purchase order</b> and <b>goods receipt</b> agree with it. Put those in the ERP first: <a href="/erp/#/pos/new" target="_blank" rel="noopener">add the PO</a>, then <a href="/erp/#/receipts/new" target="_blank" rel="noopener">record the goods receipt</a>, then upload the invoice here.</p>
-    <p class="note privacy" id="upload-privacy" hidden>Scans are read by a free cloud model in this demo. Upload sample or public invoices, not confidential ones. For private reading, choose a reader on your own server under Dashboard.</p>
+    <div class="note own" id="own-invoice"><p>Testing your own invoice? It is paid only if its <b>purchase order</b> and <b>goods receipt</b> agree with it. Put those in the ERP first: <a href="/erp/#/pos/new" target="_blank" rel="noopener">add the PO</a>, then <a href="/erp/#/receipts/new" target="_blank" rel="noopener">record the goods receipt</a>, then upload the invoice here. PDF only, up to 15 MB.</p>
+      <a class="btn quiet small" href="#/how/erp">Step-by-step instructions</a></div>
+    <p class="note privacy" id="upload-privacy" hidden>Scans are read by a free cloud model in this demo. Upload sample or public invoices, not confidential ones. For private reading, <a href="#/how/models">run a model on your computer</a> and connect it under Dashboard.</p>
     <div id="samples"></div>
   </aside>
 
@@ -99,9 +100,30 @@
     <h2 id="reader-h">Reader for scanned invoices</h2>
     <p class="sub">Text PDFs are always read on this server. Scans go to the reader chosen here. New runs use it, and each run records which reader saw the file.</p>
     <fieldset class="reader-options" id="reader-options" aria-label="Reader"></fieldset>
-    <form class="reader-find" id="reader-find">
-      <button class="btn quiet" type="button" id="reader-scan">Find models on this machine</button>
-      <label for="reader-url">or connect to</label>
+    <div class="local" id="local" aria-labelledby="local-h">
+      <h3 id="local-h">Use a model on your computer</h3>
+      <p class="sub">Start NuExtract3 or Qwen3-VL on your own computer and this page passes scans to it: they go from the desk to your browser and on to your model, and no AI company sees them. <a href="#/how/models" class="help">How to start a model on your computer</a></p>
+      <div class="local-actions" id="local-actions">
+        <button class="btn" type="button" id="local-scan">Find models on my computer</button>
+        <form class="local-form" id="local-form">
+          <label for="local-url">or type its address</label>
+          <input id="local-url" placeholder="http://127.0.0.1:8100" autocomplete="off" spellcheck="false">
+          <button class="btn quiet" type="submit" id="local-connect">Connect</button>
+        </form>
+      </div>
+      <div class="local-on" id="local-on" hidden>
+        <p id="local-on-text"></p>
+        <button class="btn quiet" type="button" id="local-disconnect">Disconnect</button>
+      </div>
+      <div class="local-found" id="local-found"></div>
+      <p class="note" id="local-status" aria-live="polite"></p>
+    </div>
+    <!-- Searching the server's own machine. Only useful when the desk is installed on the same machine or
+         network as the models (then "the host" and "your computer" are the same); hidden on the hosted demo.
+         Turned on with APFLOW_SERVER_READERS=1. -->
+    <form class="reader-find" id="reader-find" hidden>
+      <button class="btn quiet" type="button" id="reader-scan">Find models on the desk's server</button>
+      <label for="reader-url">or connect the server to</label>
       <input id="reader-url" placeholder="http://127.0.0.1:8104" autocomplete="off" spellcheck="false">
       <button class="btn quiet" type="submit" id="reader-connect">Connect</button>
     </form>
@@ -113,28 +135,55 @@
 </main>
 
 <main id="view-how" class="how" hidden>
-  <h1>How the invoice desk decides</h1>
-  <p class="lead">Each invoice goes through the same eight steps. The AI model only reads documents; every decision comes from fixed rules, so the same invoice always gets the same answer, and every hold names who should act and what to ask.</p>
+  <h1>How it works</h1>
+  <p class="lead">What is on this site, how to test it with the data provided, how to add your own purchase orders and goods receipts, and how to read scans with a private model on your own computer.</p>
 
-  <section aria-labelledby="map-h">
-    <h2 id="map-h">The process</h2>
+  <nav class="toc" aria-label="On this page">
+    <a href="#/how/use"><span class="toc-n">1</span><span><b>What is here and how to test it</b><small>The desk, the ERP, the samples, the eight steps</small></span></a>
+    <a href="#/how/erp"><span class="toc-n">2</span><span><b>Your own PO, goods receipt and invoice</b><small>Every step in the ERP, file types and limits</small></span></a>
+    <a href="#/how/models"><span class="toc-n">3</span><span><b>A private model on your computer</b><small>NuExtract3 or Qwen3-VL 4B, or your own</small></span></a>
+  </nav>
+
+  <!-- ===================== 1 ===================== -->
+  <section class="part" id="how-use" aria-labelledby="use-h">
+    <p class="part-n">Part 1</p>
+    <h2 id="use-h">What is here and how to test it</h2>
+
+    <h3>Two systems on one site</h3>
+    <dl class="pairs">
+      <dt><a href="#/process">Invoice desk</a> (this app)</dt>
+      <dd>Takes an invoice PDF and decides: <b>approve</b>, <b>hold for a person</b> (naming who and what to ask) or <b>reject</b> (with a message the vendor can act on). You watch each step as it runs. The <a href="#/dashboard">Dashboard</a> totals what has been processed, and is where you choose which model reads scans.</dd>
+      <dt><a href="/erp/" target="_blank" rel="noopener">Kaveri ERP</a></dt>
+      <dd>The buyer's system of record, standing in for NetSuite or SAP: the vendor master, purchase orders and goods receipts, each with its printed document. The desk keeps no copy; on every run it reads them through the ERP's API with an integration token, as an AP product reads a client's ERP.</dd>
+      <dt>The reader</dt>
+      <dd>PDFs with a text layer are read on the server, with no model. Scans go to the reader chosen on the Dashboard: a free cloud model (Gemini), <a href="#/how/models">a model on your computer</a>, the demo stand-in (which knows only the built-in sample scans), or OCR alone. The model only reads; every decision comes from fixed rules.</dd>
+    </dl>
+    <p class="sub">The buyer is an invented group, Kaveri Instruments, with companies in India (rupees), the US (dollars) and Germany (euros).</p>
+
+    <h3>Test it with the data provided</h3>
+    <ol class="steps">
+      <li><b>Open <a href="#/process">Process an invoice</a> and pick a sample</b> from the list on the left. Samples are grouped: clean invoices that should be approved, edge cases, international invoices, and documents that are not invoices. Items marked <i>scan</i> are images and need the reader.</li>
+      <li><b>Watch the run.</b> Each of the eight steps shows what it found. The stamp on the page is the decision.</li>
+      <li><b>Read the tabs under the run.</b> <i>All checks</i> lists the 16 checks with their evidence; <i>What was read</i> shows each field and how sure the reader was; <i>Three-way match</i> sets each invoice line against its PO line and goods receipt, with links to those documents in the ERP.</li>
+      <li><b>Act on a hold.</b> Approve, approve part, confirm the suggested PO, or reject, with a reason. The action is recorded in the run's <i>History</i>.</li>
+      <li><b>Fill the dashboard.</b> On the <a href="#/dashboard">Dashboard</a>, press <i>Run all 25 samples</i>. <i>Clear all runs</i> starts again.</li>
+      <li><b>Try the cases below</b> with <i>Run this case</i>.</li>
+    </ol>
+    <p class="sub">To try the upload path with the same files, download a sample and drop it on <i>Upload an invoice PDF</i>: <span id="sample-downloads"></span>. The POs and goods receipts behind them are in the ERP; each record there opens its PDF.</p>
+
+    <h3 id="map-h">The process</h3>
     <figure class="map" id="process-map"></figure>
-  </section>
 
-  <section aria-labelledby="edge-h">
-    <h2 id="edge-h">Edge cases built in</h2>
+    <h3 id="edge-h">Edge cases built in</h3>
     <p class="sub">Each one needs information beyond the invoice itself, which is where checking by hand usually fails.</p>
     <div class="edges" id="edges"></div>
-  </section>
 
-  <section aria-labelledby="rules-h">
-    <h2 id="rules-h">Rules and thresholds</h2>
+    <h3 id="rules-h">Rules and thresholds</h3>
     <p class="sub">Read live from the system's settings.</p>
     <dl class="rules" id="rules"></dl>
-  </section>
 
-  <section aria-labelledby="assume-h">
-    <h2 id="assume-h">Assumptions</h2>
+    <section aria-labelledby="assume-h">
+    <h3 id="assume-h">Assumptions</h3>
     <ul class="plain">
       <li>The buyer is a group of three companies: Kaveri Instruments Pvt Ltd (India, rupees), Kaveri Instruments Inc. (US, dollars) and Kaveri Instruments GmbH (Germany, euros). The billed company comes from the PO, the tax number or the name on the invoice.</li>
       <li>Tax follows where the supplier and the billed company are: GST in India (CGST + SGST within a state, IGST across states); no GST on an import into India (IGST is paid at customs); US sales tax; domestic VAT; reverse charge between EU businesses.</li>
@@ -148,19 +197,172 @@
     </ul>
   </section>
 
-  <section aria-labelledby="limits-h">
-    <h2 id="limits-h">What it does not do</h2>
+    <section aria-labelledby="limits-h">
+    <h3 id="limits-h">What it does not do</h3>
     <ul class="plain">
       <li>Pay vendors, post approved bills back to the ERP, or code invoices to ledger accounts.</li>
       <li>Read languages other than English. Tax rules cover India, the US and the EU; GSTINs, EINs and German and French VAT IDs are checked for format and check digits, but not looked up in the EU's VIES register.</li>
       <li>Sign people in: whoever acts on a hold types their name.</li>
       <li>Keep history across restarts on the free host: runs and records added in the ERP reset when the service restarts after being idle.</li>
-      <li>The live demo reads scans with a free cloud tier, which may keep and review requests. That is fine for synthetic invoices. For real invoices, choose a private reader (NuExtract3 or Qwen3-VL on the company's own server, started with <code>scripts/serve_reader.py</code>) under Dashboard, or use a paid tier.</li>
+      <li>The live demo reads scans with a free cloud tier, which may keep and review requests. That is fine for synthetic invoices. For real invoices, use a model on your own computer or server (<a href="#/how/models">part 3</a>), or a paid tier.</li>
     </ul>
+  </section>
+  </section>
+
+  <!-- ===================== 2 ===================== -->
+  <section class="part" id="how-erp" aria-labelledby="erp-h">
+    <p class="part-n">Part 2</p>
+    <h2 id="erp-h">Your own PO, goods receipt and invoice</h2>
+    <p>An invoice is approved only when the ERP holds a purchase order that agrees with it and, for goods, a goods receipt showing the goods arrived and were accepted. Upload your own invoice without them and it is held: <i>no matching PO</i>. So put the PO and receipt into the ERP first, in this order.</p>
+
+    <div class="callout">
+      <b>Files:</b> PDF only, up to 15 MB each, for invoices, POs and receipts alike. Text PDFs are read fully up to 5 pages; scanned PDFs, the first 2 pages by a model or the first 3 by OCR. One file is one document. English only.
+    </div>
+
+    <ol class="steps big">
+      <li id="how-erp-vendor"><b>Check the vendor is in the vendor master.</b> Open <a href="/erp/#/vendors" target="_blank" rel="noopener">ERP &gt; Vendors</a>. If the supplier is listed, note its name and go on. If not, add it here with <a href="/erp/#/vendors/new" target="_blank" rel="noopener">Add a vendor</a>, or while adding the PO (next step). A vendor needs:
+        <table class="spec">
+          <tr><th>Name</th><td>As printed on their invoices.</td></tr>
+          <tr><th>Country</th><td>India, United States, Germany, France or United Kingdom.</td></tr>
+          <tr><th>Tax number</th><td><b>India: GSTIN, required.</b> 15 characters, the last a check character (<code>29ABCDE1234F1ZW</code> is a valid made-up one). The first two digits give the state, which decides CGST and SGST against IGST.<br><b>US: EIN</b>, <code>12-3456789</code>. <b>Germany: VAT ID</b> <code>DE</code> and 9 digits, check digit verified. <b>France:</b> <code>FR</code>, a 2-character key and 9 digits, key verified. Others: format only. Outside India the tax number may be left blank, but an EU vendor without a VAT ID has its invoices held.</td></tr>
+          <tr><th>Bank account</th><td>Account number (India, US) or IBAN (Europe), exactly as on their invoices. An invoice naming a different account is held for fraud review.</td></tr>
+          <tr><th>Bank code</th><td>IFSC (India), routing number (US) or BIC (Europe).</td></tr>
+          <tr><th>Payment terms</th><td>Days, 30 if left alone.</td></tr>
+        </table>
+        A GSTIN already used by another vendor is refused.
+      </li>
+      <li id="how-erp-po"><b>Add the purchase order.</b> Open <a href="/erp/#/pos/new" target="_blank" rel="noopener">ERP &gt; Purchase orders &gt; Add a PO</a> and drop the PO's PDF on the upload box. The ERP reads it into the form (a text PDF on the server; a scan with the chosen reader). <b>Check every field before saving</b>: the desk holds the invoice to exactly what is saved. You can also skip the upload and type the PO in.
+        <table class="spec">
+          <tr><th>PO number</th><td>As on the PO; must be unique. Leave blank to get the next number (<code>PO-2026-9001</code> and on). The invoice need not quote it: the desk finds the PO by vendor and lines when it is missing.</td></tr>
+          <tr><th>PO date</th><td>The invoice may not be dated before it.</td></tr>
+          <tr><th>Ordered by</th><td>Which group company is buying: India, US or Germany. It decides the tax rules and the buyer details the invoice must show.</td></tr>
+          <tr><th>Currency</th><td>INR, USD, EUR or GBP. The invoice must be in the same currency.</td></tr>
+          <tr><th>Kind</th><td><b>Goods</b> need a goods receipt (three-way match). <b>Services</b> are matched to the PO alone (two-way).</td></tr>
+          <tr><th>Prices on the PO are</th><td>Excluding tax, or including tax (as government GeM orders print them). The desk compares prices before tax either way.</td></tr>
+          <tr><th>Vendor</th><td>Pick from the list, or choose <i>New vendor</i> and fill in the vendor fields above.</td></tr>
+          <tr><th>Lines</th><td>For each line: description, HSN code (optional), quantity (above 0), unit, rate (not negative) and tax rate (0 to 40%). Use the descriptions the invoice will use: invoice lines are paired with PO lines by description, and by HSN code when both have one.</td></tr>
+        </table>
+        Saved POs are open for receipts and invoices.
+      </li>
+      <li id="how-erp-receipt"><b>Record the goods receipt</b> (goods only). Open <a href="/erp/#/receipts/new" target="_blank" rel="noopener">ERP &gt; Goods receipts &gt; Record a goods receipt</a>, choose the PO, and drop the receipt PDF or type the quantities per line:
+        <table class="spec">
+          <tr><th>Received</th><td>What arrived.</td></tr>
+          <tr><th>Accepted</th><td>What passed inspection; never more than received. Only accepted goods can be paid for.</td></tr>
+          <tr><th>Limits</th><td>Open POs only. All receipts on a line together may reach 110% of the quantity ordered, no more. Several receipts per PO are fine (part deliveries).</td></tr>
+          <tr><th>Receipt number, date, by</th><td>Blank number: the next one (<code>GRN-9001</code> and on).</td></tr>
+        </table>
+      </li>
+      <li><b>Upload the invoice</b> on <a href="#/process">Process an invoice</a>: drop the PDF on <i>Upload an invoice PDF</i>. Up to 15 MB. The run reads the ERP as it is at that moment.</li>
+      <li><b>If it was held because the ERP lacked something</b>, add it in the ERP and press <i>Check again</i> on the run. The desk reads the ERP afresh and decides again.</li>
+    </ol>
+
+    <h3>What counts as agreeing</h3>
+    <table class="spec">
+      <tr><th>Vendor</th><td>The invoice's GSTIN or tax number (or failing that, its name) matches an approved vendor, and its bank account matches the one on file.</td></tr>
+      <tr><th>Buyer</th><td>The invoice is addressed to the company on the PO, with that company's tax number when the rules need one.</td></tr>
+      <tr><th>Price</th><td>Each unit price, before tax, within ₹1 per unit or 0.5% of the PO rate, whichever is larger (1 unit of the invoice's currency for dollars or euros).</td></tr>
+      <tr><th>Quantity</th><td>Not more than accepted on goods receipts, minus anything already billed on earlier invoices.</td></tr>
+      <tr><th>Value</th><td>All invoices against the PO together stay within its value; an excess is held for Procurement.</td></tr>
+      <tr><th>Tax and totals</th><td>Tax at the PO's rate and of the right kind (CGST+SGST, IGST, sales tax, VAT or reverse charge); lines, subtotal, tax and total add up within ₹1.</td></tr>
+      <tr><th>Approval</th><td>Above ₹5,00,000 before tax (other currencies converted at the demo rates) a manager must sign off.</td></tr>
+    </table>
+
+    <h3>Tidying up</h3>
+    <ul class="plain">
+      <li>Records you add are tagged <i>tester</i>. <i>Remove tester records</i> on the <a href="/erp/" target="_blank" rel="noopener">ERP's home page</a> deletes them; the demo company's records stay.</li>
+      <li>The free host restarts after about 15 minutes idle, which also clears tester records and runs. Expect a slow first page after a pause.</li>
+    </ul>
+
+    <h3 id="how-erp-api">For integrators: the ERP's API</h3>
+    <p>REST, shaped like NetSuite's: <code>/erp/api/record/v1/vendor</code>, <code>/purchaseOrder</code>, <code>/itemReceipt</code>, each with <code>/&lt;id&gt;</code>, and <code>/purchaseOrder/&lt;id&gt;/!transform/itemReceipt</code>. Every call needs <code>Authorization: Bearer &lt;token&gt;</code>; without it the answer is 401. The token is on the ERP's <a href="/erp/#/integration" target="_blank" rel="noopener">Integration</a> page.</p>
+  </section>
+
+  <!-- ===================== 3 ===================== -->
+  <section class="part" id="how-models" aria-labelledby="models-h">
+    <p class="part-n">Part 3</p>
+    <h2 id="models-h">A private model on your computer</h2>
+    <p>Scans need a vision model to be read well. Instead of the cloud model, you can run an open model on your own computer. This site is hosted elsewhere and cannot reach your computer, but this page, open in your browser, can: the desk hands each scan to your browser, your browser passes it to the model on your computer and returns the answer. No AI company sees the page.</p>
+    <p class="sub"><b>Be aware:</b> the PDF itself is still uploaded to this site to be checked. For documents that must not leave your company at all, run the whole desk on your own machine (<a href="#/how/self">below</a>).</p>
+
+    <h3>What you need</h3>
+    <table class="spec">
+      <tr><th>Computer</th><td>Windows 10 or 11, macOS 12 or later, or Linux. 8 GB of memory at least (the model uses about 6 GB; 16 GB is comfortable). About 5 GB of free disk. A graphics card helps but is not needed.</td></tr>
+      <tr><th>Browser</th><td>Chrome or Edge, recent. They ask your permission before a site can reach your computer. Firefox also works. Safari may block it; if nothing is found in Safari, use Chrome.</td></tr>
+      <tr><th>Python</th><td>3.9 or later, for the launcher script. Check with <code>python --version</code> (on Windows also <code>py --version</code>). If missing: <a href="https://www.python.org/downloads/" target="_blank" rel="noopener">python.org/downloads</a> (on Windows, tick <i>Add python.exe to PATH</i>).</td></tr>
+      <tr><th>Time</th><td>About 15 minutes the first time, most of it the download (about 3.4 GB). Later starts take a minute.</td></tr>
+      <tr><th>Speed</th><td>With a recent graphics card, seconds per invoice. On a laptop processor, one to several minutes per scan. Text PDFs never use the model.</td></tr>
+    </table>
+
+    <h3>Choose a model</h3>
+    <table class="spec">
+      <tr><th>NuExtract3 (Numind), 4B</th><td>Built for pulling fields out of documents into a fixed form. The default. Runs best under <b>llama.cpp</b>. Download about 3.4 GB (2.7 GB model and 0.7 GB image encoder). Apache-2.0.</td></tr>
+      <tr><th>Qwen3-VL 4B (Alibaba)</th><td>A general model that reads images, asked for the desk's JSON. Runs best under <b>Ollama</b>. Download about 3.3 GB. Apache-2.0.</td></tr>
+    </table>
+
+    <h3 id="how-models-nuextract">Steps: NuExtract3 with llama.cpp</h3>
+    <ol class="steps big">
+      <li><b>Install llama.cpp.</b> Open a terminal (Windows: <i>Terminal</i> or <i>PowerShell</i>; macOS: <i>Terminal</i>) and run
+        <pre><code>winget install llama.cpp</code></pre> on Windows, or <pre><code>brew install llama.cpp</code></pre> on macOS or Linux (with Homebrew). Close the terminal and open a new one, then check: <pre><code>llama-server --version</code></pre></li>
+      <li><b>Download the launcher</b>, a small Python script that picks a free port, starts the model and lets this site talk to it: <a class="btn quiet small" href="/downloads/serve_reader.py" download>Download serve_reader.py</a></li>
+      <li><b>Run it</b> from the folder it was saved to:
+        <pre><code>cd Downloads
+python serve_reader.py</code></pre> (on Windows <code>py serve_reader.py</code> if <code>python</code> is not found). The first run downloads the model; the window shows progress messages every 20 seconds.</li>
+      <li><b>Wait for</b> <code>[reader] ready: NuExtract3 at http://127.0.0.1:8100</code> (the port may differ) and <code>checked: a page at https://apcycle-za.onrender.com may call this model</code>. Leave this window open: closing it stops the model.</li>
+      <li><b>Connect it.</b> On the <a href="#/dashboard">Dashboard</a>, under <i>Use a model on your computer</i>, press <b>Find models on my computer</b>. If the browser asks to let this site reach devices on your local network or apps on this device, choose <b>Allow</b>. The desk connects to the model and selects it as the reader.</li>
+      <li><b>Test it.</b> Press <i>Test the reader</i> on the Dashboard: two sample scans go to your model and its reading is compared with their answer keys. Then run any scanned sample.</li>
+    </ol>
+
+    <h3 id="how-models-qwen">Steps: Qwen3-VL 4B with Ollama</h3>
+    <ol class="steps big">
+      <li><b>Install Ollama</b> from <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com/download</a>.</li>
+      <li><b>Download the launcher</b> (<a href="/downloads/serve_reader.py" download>serve_reader.py</a>) and run, from the folder it was saved to:
+        <pre><code>python serve_reader.py --model qwen3-vl</code></pre>
+        It starts a separate Ollama on a free port that allows this site, and downloads <code>qwen3-vl:4b</code> (about 3.3 GB) the first time. An Ollama you already run is left alone; both share downloaded models.</li>
+      <li><b>Wait for</b> <code>ready: qwen3-vl:4b</code>, then connect and test on the Dashboard as in steps 5 and 6 above.</li>
+    </ol>
+    <details class="more">
+      <summary>Without the launcher: your usual Ollama</summary>
+      <p>Ollama refuses requests from web pages unless they are allowed. Allow this site, restart Ollama, and download the model:</p>
+      <table class="spec">
+        <tr><th>Windows</th><td><pre><code>setx OLLAMA_ORIGINS "https://apcycle-za.onrender.com"</code></pre> then quit Ollama from the tray icon (right-click, Quit) and start it again from the Start menu.</td></tr>
+        <tr><th>macOS</th><td><pre><code>launchctl setenv OLLAMA_ORIGINS "https://apcycle-za.onrender.com"</code></pre> then quit and reopen the Ollama app.</td></tr>
+        <tr><th>Linux</th><td><pre><code>OLLAMA_ORIGINS="https://apcycle-za.onrender.com" ollama serve</code></pre> (for the system service, add <code>Environment="OLLAMA_ORIGINS=https://apcycle-za.onrender.com"</code> with <code>sudo systemctl edit ollama</code>, then restart it).</td></tr>
+      </table>
+      <p>Then <code>ollama pull qwen3-vl:4b</code>. <i>Find models on my computer</i> looks on Ollama's usual port, 11434.</p>
+    </details>
+    <details class="more">
+      <summary>Without the launcher: llama.cpp by hand</summary>
+      <pre><code>llama-server -hf numind/NuExtract3-GGUF:Q4_K_M --jinja --port 8100</code></pre>
+      <p>llama.cpp's server accepts requests from web pages by default. For Qwen3-VL use <code>-hf Qwen/Qwen3-VL-4B-Instruct-GGUF:Q4_K_M</code>.</p>
+    </details>
+
+    <h3 id="how-models-own">Your own model</h3>
+    <p>Any model that reads images, served with the OpenAI-style API (<code>/v1/models</code> and <code>/v1/chat/completions</code>) or by Ollama, can be used:</p>
+    <ul class="plain">
+      <li><b>Allow this site</b> (CORS) to call it: LM Studio: turn on <i>Enable CORS</i> in the server settings. vLLM: <code>--allowed-origins '["https://apcycle-za.onrender.com"]'</code>. Ollama: <code>OLLAMA_ORIGINS</code>, as above. llama.cpp: allowed already. Or start any server through the launcher with <code>--cmd "your-server --host {host} --port {port}"</code>, which picks the port and checks the result.</li>
+      <li><b>Name:</b> the desk recognises image models by name: NuExtract, Qwen-VL, LLaVA, Gemma 3, Pixtral, MiniCPM-V, InternVL, Granite Vision, Moondream, or names containing <code>vl</code>, <code>vision</code> or <code>ocr</code>. NuExtract models are given NuExtract's extraction template; others are given the desk's instructions and asked for JSON.</li>
+      <li><b>Where it is:</b> the search looks at ports 8100 to 8120 and the usual ones (11434 Ollama, 1234 LM Studio, 8080 and 8081 llama.cpp, 8000 and 8001 vLLM, 30000, 5000, 5001) on this computer. Anywhere else, type its address, for example <code>http://127.0.0.1:9000</code> or another machine on your network, and press <i>Connect</i>.</li>
+      <li><b>Then</b> press <i>Test the reader</i> to see how well it reads before trusting it.</li>
+    </ul>
+
+    <h3 id="how-models-trouble">If it does not work</h3>
+    <table class="spec">
+      <tr><th>Nothing found</th><td>Is the launcher's window still open and showing <i>ready</i>? A first download takes a while. Is the port within 8100 to 8120? If not, type the address shown.</td></tr>
+      <tr><th>The browser blocked it</th><td>Click the icon at the left of the address bar, open the site's settings, and set the local network (or <i>apps on this device</i>) permission to Allow. Reload and try again.</td></tr>
+      <tr><th>Ollama found nothing, or is refused</th><td>Your Ollama was started without allowing this site: see <i>Without the launcher</i> above, or use the launcher. Check it has an image model: <code>ollama list</code>.</td></tr>
+      <tr><th>Found, but "cannot read images"</th><td>The server is serving a text-only model. Load NuExtract3, Qwen3-VL or another vision model.</td></tr>
+      <tr><th>Slow, or the run says it used OCR</th><td>A run waits up to 10 minutes for your model, then reads with OCR instead and says so. On a laptop, try one scan at a time. Keep the desk open in a tab: if every desk tab is closed, scans go to OCR until you connect again.</td></tr>
+      <tr><th>"No longer connected"</th><td>The desk restarted (the free host sleeps when idle) or another tab connected a model. Press <i>Find models on my computer</i> again.</td></tr>
+      <tr><th>Port already in use</th><td>The launcher skips busy ports by itself. To choose the range: <code>--ports 8100-8120</code>. <code>python serve_reader.py --list</code> shows the models it started.</td></tr>
+    </table>
+
+    <h3 id="how-self">Running the whole desk yourself</h3>
+    <p>For full privacy, run the desk on your own computer or server, with Python 3.13, Tesseract OCR and Poppler installed: <code>pip install -r requirements-app.txt</code>, then <code>python -m apflow.web.app</code>, and open <code>http://localhost:8000</code>. Models are then connected the same way (the launcher already allows <code>http://localhost:8000</code>). On the same machine as the models you can also let the server look for them itself by starting it with <code>APFLOW_SERVER_READERS=1</code>. The repository's README has the details.</p>
   </section>
 </main>
 
 <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script src="/static/local-model.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

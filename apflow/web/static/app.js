@@ -42,7 +42,12 @@ function route() {
   $("#view-process").hidden = v !== "process";
   $("#view-dashboard").hidden = v !== "dashboard";
   $("#view-how").hidden = v !== "how";
-  if (v === "how") loadHow();
+  if (v === "how") loadHow().then(() => {
+    // #/how/<part>: scroll to that part of the instructions (#/how alone: the top)
+    const el = id && document.getElementById(`how-${id}`);
+    if (el) { el.scrollIntoView({ block: "start" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); }
+    else window.scrollTo(0, 0);
+  });
   document.querySelectorAll("[data-nav]").forEach((a) => { if (a.dataset.nav !== v) a.removeAttribute("aria-current"); else a.setAttribute("aria-current", "page"); });
   if (v === "dashboard") { loadDashboard(); loadReaders(); }
   if (v === "process" && id && id !== state.runId) openRun(id, false);
@@ -479,12 +484,16 @@ const post = (path, body) => api(path, { method: "POST", headers: { "Content-Typ
 
 function showReader(r) {
   const cur = r.options.find((o) => o.id === r.current);
-  $("#model-note").textContent = `Scans are read by: ${r.label}`;
+  // the header stays one line: "NuExtract3 on your computer", the full name on hover
+  const short = cur && cur.kind === "browser" ? cur.label.replace(/ \(.*$/, "") + (cur.connected ? "" : " (not connected)") : r.label;
+  $("#model-note").textContent = `Scans are read by: ${short}`;
+  $("#model-note").title = r.label;
   $("#upload-privacy").hidden = !(cur && cur.kind === "cloud");
+  $("#reader-find").hidden = !r.server_scan;  // searching the server's own machine: self-hosted desks only
   const box = $("#reader-options");
   box.innerHTML = r.options.map((o) => `<label class="reader-opt" data-kind="${esc(o.kind)}">
     <input type="radio" name="reader" value="${esc(o.id)}"${o.id === r.current ? " checked" : ""}>
-    <span class="reader-name">${esc(o.label)}${o.kind === "private" ? ' <span class="tag">private</span>' : ""}</span>
+    <span class="reader-name">${esc(o.label)}${o.kind === "private" ? ' <span class="tag">private</span>' : ""}${o.kind === "browser" ? ` <span class="tag${o.connected ? "" : " off"}">${o.connected ? "your computer" : "not connected"}</span>` : ""}</span>
     <span class="reader-note">${esc(o.note)}</span></label>`).join("");
   box.querySelectorAll("input").forEach((i) => i.addEventListener("change", async () => {
     try {
@@ -516,8 +525,67 @@ async function findReaders(url) {
     const n = d.found.length;
     st.textContent = n
       ? `Found ${n} vision model${n > 1 ? "s" : ""}${d.added.length ? `, ${d.added.length} new` : ""}. Choose one above to use it.`
-      : "No vision model servers found on this machine. Start one with scripts/serve_reader.py, or connect to its address.";
+      : "No vision model servers found on the desk's server. Start one there with serve_reader.py, or connect to its address.";
   } catch (err) { st.textContent = err.message; }
+  finally { btns.forEach((b) => b.disabled = false); }
+}
+
+/* ---------------- a model on this computer (see local-model.js) ---------------- */
+function renderLocal(st) {
+  const on = !!(st.saved && st.connected);
+  $("#local-actions").hidden = on;
+  $("#local-on").hidden = !on;
+  if (on) {
+    const where = st.saved.url.replace(/^https?:\/\//, "");
+    $("#local-on-text").innerHTML = `<b>Connected:</b> ${esc(st.saved.model)} at ${esc(where)}. ${st.busy ? `Reading ${st.busy} scan${st.busy > 1 ? "s" : ""} now. ` : ""}${st.handled ? `${st.handled} answered so far. ` : ""}Keep a desk tab open while invoices run.`;
+  }
+  if (st.error) $("#local-status").textContent = st.error;
+}
+
+function foundList(models) {
+  const box = $("#local-found");
+  box.innerHTML = models.length > 1 ? `<p class="sub">Several models answered. Choose one:</p>` + models.map((m, i) => `<button class="btn quiet" data-use="${i}" ${m.vision ? "" : "disabled"}>
+      ${esc(m.model)} <span class="muted">at ${esc(m.url.replace(/^https?:\/\//, ""))}${m.vision ? "" : ", cannot read images"}</span></button>`).join(" ") : "";
+  box.querySelectorAll("[data-use]").forEach((b) => b.addEventListener("click", () => useLocal(models[+b.dataset.use])));
+}
+
+async function useLocal(m) {
+  const msg = $("#local-status");
+  try {
+    const d = await LocalModel.connect(m);
+    $("#local-found").innerHTML = "";
+    showReader(d);
+    msg.innerHTML = `New scans will be read by ${esc(m.model)} on your computer. <button class="linklike" id="local-test">Test it now</button>`;
+    $("#local-test").addEventListener("click", () => { modelCheck(); $("#model-check-result").scrollIntoView({ block: "nearest" }); });
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function findLocal(address) {
+  const msg = $("#local-status"), btns = [$("#local-scan"), $("#local-connect")];
+  btns.forEach((b) => b.disabled = true);
+  $("#local-found").innerHTML = "";
+  msg.textContent = address ? `Asking ${address}...` : "Looking on this computer (your browser may ask for permission first)...";
+  try {
+    const r = await LocalModel.scan(address || null);
+    const vision = r.models.filter((m) => m.vision);
+    if (address) {
+      const base = LocalModel.normalise(address);
+      const here = r.models.filter((m) => m.url === base);
+      if (!here.length) throw new Error(`Nothing answered at ${base}. Is the model server running there, and does it allow this site? See "If it does not work" in the instructions.`);
+      const v = here.filter((m) => m.vision);
+      if (!v.length) throw new Error(`${base} serves ${here.map((m) => m.model).join(", ")}, which cannot read images. Load NuExtract3, Qwen3-VL or another vision model.`);
+      return v.length === 1 ? useLocal(v[0]) : foundList(here);
+    }
+    if (vision.length === 1) return useLocal(vision[0]);
+    if (vision.length > 1) { msg.textContent = ""; return foundList(r.models); }
+    if (r.permission === "denied") {
+      msg.innerHTML = `Your browser has blocked this site from reaching your computer. Click the icon at the left of the address bar, open the site's settings, allow the local network permission, reload, and try again. <a href="#/how/models-trouble">Help</a>`;
+    } else if (r.models.length) {
+      msg.innerHTML = `Found ${esc(r.models.map((m) => `${m.model} (${m.url.replace(/^https?:\/\//, "")})`).join(", "))}, but none can read images. Load NuExtract3 or Qwen3-VL. <a href="#/how/models">How</a>`;
+    } else {
+      msg.innerHTML = `No model answered on this computer. Start one with the launcher and wait until it says <i>ready</i>, then try again. An Ollama started without the launcher must allow this site (OLLAMA_ORIGINS). <a href="#/how/models">Step-by-step instructions</a>`;
+    }
+  } catch (e) { msg.innerHTML = esc(e.message) + ` <a href="#/how/models-trouble">Help</a>`; }
   finally { btns.forEach((b) => b.disabled = false); }
 }
 
@@ -584,6 +652,8 @@ async function loadHow() {
     location.hash = `#/process/${run_id}`;
     openRun(run_id, true);
   }));
+  const pick = ["S01", "E2", "E4", "I1", "I2"].map((id) => state.samples.find((x) => x.id === id)).filter(Boolean);
+  $("#sample-downloads").innerHTML = pick.map((x) => `<a href="/samples/${x.id}.pdf" download>${esc(x.title)}</a>`).join(", ");
   const { rules } = await api("/api/rules");
   $("#rules").innerHTML = rules.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
   howLoaded = true;
@@ -611,6 +681,11 @@ function wireTooltip() {
     await api("/api/demo/reset", { method: "POST" }); loadDashboard();
   });
   $("#reader-scan").addEventListener("click", () => findReaders(""));
+  $("#local-scan").addEventListener("click", () => findLocal(""));
+  $("#local-form").addEventListener("submit", (e) => { e.preventDefault(); findLocal($("#local-url").value.trim()); });
+  $("#local-disconnect").addEventListener("click", async () => { showReader(await LocalModel.disconnect()); $("#local-status").textContent = "Disconnected. Scans go to the reader selected above."; });
+  LocalModel.onChange(renderLocal);
+  LocalModel.resume();  // a connection made earlier in this browser carries on; nothing local is touched
   $("#reader-find").addEventListener("submit", (e) => { e.preventDefault(); const u = $("#reader-url").value.trim(); if (u) findReaders(u); });
   await loadReaders();
   loadErpStatus();
