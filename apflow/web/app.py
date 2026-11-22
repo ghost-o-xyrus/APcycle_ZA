@@ -3,7 +3,8 @@
 Run locally:  python -m apflow.web.app   (http://localhost:8000)
 Env: APFLOW_DATA (data dir), APFLOW_MODEL (auto | standin | none), GEMINI_API_KEY, GROQ_API_KEY, PORT,
      APFLOW_READER (local | a server address: start on a private model), APFLOW_READER_HOSTS,
-     APFLOW_READERS_DIR, APFLOW_READER_LOCKED=1 (nobody can switch the reader).
+     APFLOW_READERS_DIR, APFLOW_READER_LOCKED=1 (nobody can switch the reader),
+     APFLOW_ERP_URL (self | an ERP base URL; unset = read the ERP database directly), APFLOW_ERP_TOKEN.
 """
 from __future__ import annotations
 
@@ -24,6 +25,11 @@ def create_app(service: Service | None = None) -> Flask:
     svc = service or Service(os.environ.get("APFLOW_DATA", os.path.join(os.getcwd(), "data", "app")),
                              model_mode=os.environ.get("APFLOW_MODEL", "auto"))
     app.extensions["apflow"] = svc
+    # The ERP: its integration API (token) and its own screens, hosted alongside the desk.
+    from ..erp.api import make_api
+    from ..erp.web import make_ui
+    app.register_blueprint(make_api(svc.erp_db))
+    app.register_blueprint(make_ui(svc))
 
     @app.errorhandler(ActionError)
     def _bad(e):
@@ -36,6 +42,16 @@ def create_app(service: Service | None = None) -> Flask:
     @app.get("/")
     def index():
         return send_from_directory(app.static_folder, "index.html")
+
+    @app.get("/api/erp/status")
+    def erp_status():
+        st = svc.erp.status()
+        try:
+            svc.erp.snapshot()  # a cheap check that the ERP answers; cached for two seconds
+            st = svc.erp.status()
+        except Exception as e:  # shown to the person, never fatal for the desk's pages
+            st["error"] = str(e)
+        return jsonify(st)
 
     @app.get("/api/config")
     def config():

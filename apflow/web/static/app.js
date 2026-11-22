@@ -20,7 +20,7 @@ async function api(path, opts = {}) {
 
 const STAGES = [
   ["intake", "Receive the file"], ["read", "Read the document"], ["classify", "Check it is an invoice"],
-  ["validate", "Check the document itself"], ["vendor", "Match the vendor"], ["po", "Match the purchase order"],
+  ["validate", "Check the document itself"], ["vendor", "Match the vendor"], ["po", "Three-way match: PO and goods receipt"],
   ["risk", "Look for duplicates, date and currency problems"], ["decide", "Decide"],
 ];
 const STATUS_WORD = { approved: "Approved", part_approved: "Part approved", on_hold: "On hold", rejected: "Rejected" };
@@ -208,7 +208,7 @@ function renderDecision(run) {
   const candidate = c09 && c09.evidence.candidates && c09.evidence.candidates[0] && run.po_how === "inferred" ? c09.evidence.candidates[0][1] : null;
   let html = `${chip(fs)}<p class="decision-summary">${esc(d.summary)}</p>`;
   if (lastAction) {
-    const verb = { approve: "Approved", reject: "Rejected", approve_part: "Part approved", confirm_po: "PO confirmed" }[lastAction.action];
+    const verb = { approve: "Approved", reject: "Rejected", approve_part: "Part approved", confirm_po: "PO confirmed", recheck: "Checked again" }[lastAction.action];
     html += `<p class="note">${verb} by ${esc(lastAction.actor)}: ${esc(lastAction.reason)}</p>`;
   }
   if (fs === "on_hold") {
@@ -216,8 +216,14 @@ function renderDecision(run) {
     html += `<dl class="kv"><dt>Invoice total</dt><dd>${money(run.total, run.currency)}</dd>`;
     if (d.approvable_amount != null) html += `<dt>Can be approved now</dt><dd>${money(d.approvable_amount, run.currency)} pre-tax</dd><dt>Held</dt><dd>${money(d.held_amount, run.currency)} pre-tax</dd>`;
     if (d.reasons && d.reasons.length > 1) html += `<dt>Other reasons</dt><dd>${d.reasons.length - 1}</dd>`;
+    const failed = new Set(run.checks.filter((c) => c.status === "fail").map((c) => c.id));
+    const erpFix = failed.has("C07") ? ["/erp/#/vendors/new", "Add the vendor in the ERP"]
+      : failed.has("C09") && !candidate ? ["/erp/#/pos/new", "Add the PO in the ERP"]
+      : failed.has("C12") && run.po_number ? [`/erp/#/receipts/new?po=${encodeURIComponent(run.po_number)}`, "Record the goods receipt in the ERP"] : null;
+    if (erpFix) html += `</dl><p class="note erp-fix">If the record exists but is missing from the ERP, <a href="${erpFix[0]}" target="_blank" rel="noopener">${erpFix[1]} ↗</a>, then check again.</p><dl class="kv">`;
     html += `</dl><div class="actions">
       ${candidate ? `<button class="btn" data-act="confirm_po" data-po="${esc(candidate)}">Confirm ${esc(candidate)}</button>` : ""}
+      <button class="btn" data-act="recheck">Check again</button>
       ${d.approvable_amount != null ? `<button class="btn" data-act="approve_part">Approve ${money0(d.approvable_amount, run.currency)} now</button>` : ""}
       <button class="btn quiet" data-act="approve">Approve anyway</button>
       <button class="btn danger" data-act="reject">Reject</button>
@@ -329,24 +335,30 @@ function fieldsTable(run) {
 }
 
 function linesTable(run) {
-  const ex = run.extraction;
-  const c11 = run.checks.find((c) => c.id === "C11") || { evidence: {} };
-  const c12 = run.checks.find((c) => c.id === "C12") || { evidence: {} };
-  const price = Object.fromEntries((c11.evidence.lines || []).map((r) => [r.line, r]));
-  const qty = Object.fromEntries((c12.evidence.lines || []).map((r) => [r.line, r]));
-  const rows = ex.lines.map((l) => {
-    const p = price[l.description], q = qty[l.description];
-    const diff = p ? `<span class="${p.diff_pct > 0.5 ? "over" : ""}">${p.diff_pct > 0 ? "+" : ""}${p.diff_pct}%</span>` : "–";
-    const avail = q ? `<span class="${l.qty > q.available ? "over" : ""}">${q.available}</span> <span class="muted">of ${q.basis_qty}</span>` : "–";
-    const cur = run.currency;
-    return `<tr><td>${esc(l.description)}${l.hsn ? `<div class="muted">HSN ${esc(l.hsn)}</div>` : ""}</td><td class="num">${l.qty}</td><td class="num">${money(l.unit_price, cur)}</td>
-      <td class="num">${p ? money(p.po_price_pre_tax, cur) : "–"}${p && p.basis === "incl_tax" ? '<div class="muted">from tax-inclusive PO</div>' : ""}</td>
-      <td class="num">${diff}</td><td class="num">${avail}</td><td class="num">${money(l.amount, cur)}</td></tr>`;
+  const ex = run.extraction, cur = run.currency;
+  const matches = Object.fromEntries((run.matches || []).map((m) => [m.line, m]));
+  const tick = (ok, text) => `<span class="${ok ? "ok-mark" : "over"}">${ok ? "✓" : "✗"} ${text}</span>`;
+  const rows = ex.lines.map((l, i) => {
+    const m = matches[i] || {};
+    const inv = `<b>${esc(l.description)}</b>${l.hsn ? `<div class="muted">HSN ${esc(l.hsn)}</div>` : ""}<div>${l.qty} × ${money(l.unit_price, cur)} = ${money(l.amount, cur)}</div>`;
+    if (!m.po) return `<tr><td>${inv}</td><td colspan="3" class="muted">No PO line matches this invoice line.</td></tr>`;
+    const p = m.po;
+    const po = `<b>${esc(p.po_number)} line ${p.line_no}</b> ${p.doc ? `<a href="${esc(p.doc)}" target="_blank" rel="noopener">PO document</a>` : ""}
+      <div>${p.ordered} ${esc(p.uom)} ordered at ${money(p.unit_price, cur)}${p.basis === "incl_tax" ? " incl. tax" : ""}</div>
+      ${p.basis === "incl_tax" ? `<div class="muted">${money(p.price_pre_tax, cur)} before ${p.tax_rate}% tax</div>` : `<div class="muted">${p.tax_rate}% tax</div>`}`;
+    const grn = !m.needs_receipt ? '<span class="muted">Services: nothing to receive, so this line is matched two ways (invoice and PO).</span>'
+      : m.receipts.length ? m.receipts.map((r) => `<div><b>${esc(r.grn)}</b> ${esc(r.date)} ${r.doc ? `<a href="${esc(r.doc)}" target="_blank" rel="noopener">receipt</a>` : ""}<br>${r.received} received, ${r.accepted} accepted <span class="muted">(${esc(r.by)})</span></div>`).join("")
+      : '<span class="over">No goods receipt yet: nothing has been accepted against this line.</span>';
+    const verdict = `<div>${tick(m.price_ok, `price within ${money(m.tolerance, cur)} of the PO`)}</div>
+      <div>${tick(m.qty_ok, `${l.qty} billed, ${m.available} available`)}</div>
+      <div class="muted">${m.needs_receipt ? "accepted" : "ordered"} minus ${m.billed_before} already billed</div>`;
+    return `<tr><td>${inv}</td><td>${po}</td><td>${grn}</td><td>${verdict}</td></tr>`;
   }).join("");
   const how = { inferred: "inferred, not printed", confirmed: "confirmed by a person", printed: "printed on the invoice" }[run.po_how] || "";
-  const po = run.po_number ? `Matched to ${esc(run.po_number)} (${how}).` : "No PO matched.";
-  return `<p class="note" style="margin:0 0 12px">${po} Available to bill = accepted at goods receipt (or ordered, for services) minus already billed.</p>
-    <table><thead><tr><th>Invoice line</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">PO price, pre-tax</th><th class="num">Difference</th><th class="num">Available to bill</th><th class="num">Amount</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No line items were read.</td></tr>'}</tbody></table>`;
+  const head = run.po_number ? `Invoice against <b>${esc(run.po_number)}</b> (${how}) and its goods receipts, all read from the ERP. Each line must agree on all three before it is paid.`
+    : "No PO matched, so there is nothing to match against.";
+  return `<p class="note" style="margin:0 0 12px">${head} <a href="/erp/${run.po_number ? "#/pos/" + encodeURIComponent(run.po_number) : ""}" target="_blank" rel="noopener">Open in the ERP ↗</a></p>
+    <div class="wide"><table class="three-way"><thead><tr><th>Invoice</th><th>Purchase order</th><th>Goods receipt</th><th>Match</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">No line items were read.</td></tr>'}</tbody></table></div>`;
 }
 
 function historyTable(run) {
@@ -484,6 +496,16 @@ function showReader(r) {
 }
 async function loadReaders() { showReader(await api("/api/readers")); }
 
+async function loadErpStatus() {
+  const pill = $("#erp-pill");
+  try {
+    const st = await api("/api/erp/status");
+    pill.textContent = st.error ? "ERP not reachable" : `ERP connected${st.mode === "api" ? " by API" : ""}`;
+    pill.dataset.state = st.error ? "down" : "up";
+    pill.title = st.error || (st.records ? `${st.records.purchaseOrders} POs, ${st.records.itemReceipts} goods receipts, ${st.records.vendors} vendors` : "");
+  } catch (e) { pill.textContent = "ERP status unknown"; pill.dataset.state = "down"; }
+}
+
 async function findReaders(url) {
   const st = $("#reader-status"), btns = [$("#reader-scan"), $("#reader-connect")];
   btns.forEach((b) => b.disabled = true);
@@ -523,16 +545,20 @@ function outcomeBox(x, y, color, title, l1, l2) {
     <text x="${x + 20}" y="${y + 65}" font-size="12" fill="var(--ink-2)">${l2}</text></g>`;
 }
 function processMap() {
-  const X = [20, 260, 500, 740], r1 = 30, r2 = 160, ro = 300, w = 200;
+  const X = [20, 260, 500, 740], r1 = 30, r2 = 160, re = 262, ro = 370, w = 200;
   const arrow = (d) => `<path d="${d}" fill="none" stroke="var(--ink-3)" stroke-width="1.25" marker-end="url(#pm-arrow)"/>`;
-  return `<svg viewBox="0 0 960 400" role="img" aria-label="Eight steps from file to decision, ending in approve, hold or reject" font-family="Work Sans, system-ui, sans-serif">
+  return `<svg viewBox="0 0 960 470" role="img" aria-label="Eight steps from file to decision, with the vendor master, purchase orders and goods receipts read from the ERP, ending in approve, hold or reject" font-family="Work Sans, system-ui, sans-serif">
     <defs><marker id="pm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--ink-3)"/></marker></defs>
     ${stepBox(X[0], r1, 1, "Receive the file", "fingerprint, open, count pages")}
     ${stepBox(X[1], r1, 2, "Read the document", "PDF text; model for scans", true)}
     ${stepBox(X[2], r1, 3, "Is it an invoice?", "quotation, credit note, unclear")}
-    ${stepBox(X[3], r1, 4, "Check the document", "fields, tax numbers, totals, tax type")}
+    ${stepBox(X[3], r1, 4, "Check the document", "fields, tax numbers, totals")}
     ${stepBox(X[0], r2, 5, "Match the vendor", "approved? bank details unchanged?")}
-    ${stepBox(X[1], r2, 6, "Match the PO", "printed or inferred; price, qty")}
+    ${stepBox(X[1], r2, 6, "Three-way match", "PO price, goods received, qty")}
+    <g><rect x="${X[0]}" y="${re}" width="${X[1] + w - X[0]}" height="56" rx="8" fill="none" stroke="var(--ink-3)" stroke-dasharray="5 4"/>
+      <text x="${X[0] + 14}" y="${re + 23}" font-size="14" font-weight="700" fill="var(--ink)">Kaveri ERP</text>
+      <text x="${X[0] + 14}" y="${re + 42}" font-size="12" fill="var(--ink-2)">vendor master, POs, goods receipts: read by API with a token</text></g>
+    ${arrow(`M${X[0] + w / 2} ${re}V${r2 + 72}`)}${arrow(`M${X[1] + w / 2} ${re}V${r2 + 72}`)}
     ${stepBox(X[2], r2, 7, "Duplicates and dates", "same bill twice? plausible dates?")}
     ${stepBox(X[3], r2, 8, "Decide", "fixed rules, no AI")}
     ${arrow(`M${X[0] + w} ${r1 + 34}H${X[1] - 4}`)}${arrow(`M${X[1] + w} ${r1 + 34}H${X[2] - 4}`)}${arrow(`M${X[2] + w} ${r1 + 34}H${X[3] - 4}`)}
@@ -587,6 +613,7 @@ function wireTooltip() {
   $("#reader-scan").addEventListener("click", () => findReaders(""));
   $("#reader-find").addEventListener("submit", (e) => { e.preventDefault(); const u = $("#reader-url").value.trim(); if (u) findReaders(u); });
   await loadReaders();
+  loadErpStatus();
   await loadSamples();
   if (!location.hash) location.hash = "#/process";
   route();

@@ -198,3 +198,50 @@ def test_us_invoice_shows_dollars_and_tax_numbers(page, base_url):
     assert "Vendor GSTIN" not in body  # the Indian fields are hidden when empty on a US invoice
     page.click('[data-tab="checks"]')
     assert "US sales tax charged ($474.38)" in page.inner_text("#tab-body")
+
+
+def test_tester_journey_across_erp_and_desk(page, base_url, tmp_path):
+    """PO and first delivery into the ERP, invoice held at the desk, second delivery, Check again: approved."""
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(__file__))
+    from test_erp import _tester_docs
+    _tester_docs(tmp_path)
+    page.goto(f"{base_url}/erp/#/pos/new")
+    page.wait_for_selector("#upload input[type=file]", state="attached")
+    page.set_input_files("#upload input[type=file]", str(tmp_path / "po.pdf"))
+    page.wait_for_selector("#read-by:not([hidden])")
+    assert page.input_value('[name="po_number"]') == "PO-T-1" and page.input_value('[name="v_name"]') == "Tester Labs Pvt Ltd"
+    page.fill('[name="v_bank"]', "50100012345678")
+    page.fill('[name="v_code"]', "HDFC0001234")
+    page.click("text=Save purchase order")
+    page.wait_for_url("**/#/pos/PO-T-1")
+    page.click("text=Record a goods receipt")
+    page.wait_for_selector("#upload input[type=file]", state="attached")
+    page.set_input_files("#upload input[type=file]", str(tmp_path / "grn1.pdf"))
+    page.wait_for_function("document.querySelector('[name=\"acc\"]') && document.querySelector('[name=\"acc\"]').value === '6'")
+    page.click("text=Save goods receipt")
+    page.wait_for_url("**/#/pos/PO-T-1")
+    # the invoice at the desk
+    page.goto(f"{base_url}/#/process")
+    page.wait_for_selector("#file", state="attached")
+    assert "add the PO" in page.inner_text("#own-invoice")
+    before = page.url
+    page.set_input_files("#file", str(tmp_path / "inv.pdf"))
+    page.wait_for_function("u => location.href !== u", arg=before, timeout=10000)
+    assert stamp_text(page) == "ON HOLD"
+    page.click('[data-tab="lines"]')
+    body = page.inner_text("#tab-body")
+    assert "GRN-T-1" in body and "10 billed, 6 available" in body
+    assert page.locator(".erp-fix a").get_attribute("href").startswith("/erp/#/receipts/new?po=PO-T-1")
+    # the rest arrives and is recorded in the ERP; AP checks again
+    run_url = page.url
+    page.goto(f"{base_url}/erp/#/receipts/new?po=PO-T-1")
+    page.wait_for_selector('[name="rec"]')
+    page.fill('[name="rec"]', "4")
+    page.click("text=Save goods receipt")
+    page.wait_for_url("**/#/pos/PO-T-1")
+    page.goto(run_url)
+    page.wait_for_selector('[data-act="recheck"]')
+    page.click('[data-act="recheck"]')
+    page.wait_for_function("document.querySelector('#stamp-word').textContent === 'APPROVED'", timeout=15000)
+    assert "ERP connected" in page.inner_text("#erp-pill")

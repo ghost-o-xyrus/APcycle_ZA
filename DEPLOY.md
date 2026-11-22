@@ -53,6 +53,11 @@ and deploy. The free tier gives 512 MB, which is enough (the app peaks around
 
 ## Good to know
 
+- **The ERP.** The same service hosts Kaveri ERP at `/erp/`; the desk reads it over HTTP with a
+  token (`APFLOW_ERP_URL=self` in the Dockerfile). Optionally set `APFLOW_ERP_TOKEN` as a secret;
+  otherwise the ERP generates its own. Records testers add, and all runs, reset when the free
+  service restarts after being idle.
+
 - **Readers.** The public demo reads scans with the free Gemini tier. Private readers
   (NuExtract3, Qwen3-VL) need a machine you control: run the app on it and start
   `scripts/serve_reader.py` (see README). Render's free plan cannot host a model (512 MB).

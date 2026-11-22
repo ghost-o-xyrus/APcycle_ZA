@@ -13,7 +13,7 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 406 tests, ~75 s (browser tests skip without Chrome)
+python -m pytest                          # 429 tests, ~75 s (browser tests skip without Chrome)
 PYTHONPATH=. python scripts/run_scenarios.py -v   # 25 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```
@@ -23,6 +23,8 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | Path | What it does |
 | --- | --- |
 | `apflow/config.py` | Every threshold, with the reason for its value |
+| `apflow/erp/` | Kaveri ERP: database (`db.py`), NetSuite-style API with token (`api.py`), screens (`web.py`, `static/`), PO and receipt reading (`reader.py`) |
+| `apflow/erp_client.py` | How the desk reads the ERP: over HTTP with the token, or directly |
 | `apflow/taxid.py` | EIN format, EU VAT ID formats, German and French VAT check digits |
 | `apflow/gstin.py` | GSTIN checksum (verified on real GeM GSTINs) and OCR repair |
 | `apflow/company.py` | The invented company: vendors, POs, goods receipts, invoice history |
@@ -42,6 +44,29 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | `scripts/serve_reader.py` | Starts a private reader on a free port, on the least busy GPU, and registers it (standard library only) |
 | `apflow/money.py` | Rupee amounts in Indian grouping (₹1,47,500.00) |
 | `apflow/web/static/` | The interface: desk (live run, stamp, decision, details) and dashboard; bundled OFL fonts |
+
+## The ERP: where POs and goods receipts come from
+
+An AP product does not keep its own POs: it reads the client's ERP (NetSuite, SAP S/4HANA).
+**Kaveri ERP** (`/erp/`) stands in for that system of record:
+
+- Its own database and documents: vendor master, purchase orders (with printed PO PDFs) and goods
+  receipts (with printed receipt notes); one real public GeM contract kept for reference.
+- An integration API shaped like NetSuite's REST records: `vendor`, `purchaseOrder`, `itemReceipt`,
+  and `POST purchaseOrder/{id}/!transform/itemReceipt` to receive goods. Every call needs
+  `Authorization: Bearer <token>`; without it, 401.
+- Screens for Purchasing and Stores: upload a PO or a goods receipt PDF, the ERP reads it into a
+  draft, a person checks and saves it. Records added there are marked "tester" and can be removed.
+
+The desk reads vendors, POs and receipts on every run (`apflow/erp_client.py`). Deployed, it calls
+the ERP over HTTP with the token (`APFLOW_ERP_URL=self`, set in the Dockerfile); in tests it can read
+the ERP's database directly. Connecting real NetSuite or SAP means writing one client that returns the
+same snapshot. The three-way match tab shows each invoice line beside its PO line and every goods
+receipt against it, with links to both documents; "Check again" re-runs a held invoice once the ERP
+has the missing PO or delivery.
+
+To test with your own invoice: in the ERP add the vendor (if new), upload the PO, record the goods
+receipt; then upload the invoice at the desk.
 
 ## Countries
 

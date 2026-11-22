@@ -35,8 +35,10 @@ def test_run_record_roundtrip(svc):
     assert [e["seq"] for e in r["events"]] == list(range(1, 9))
     assert {c["id"] for c in r["checks"]} >= {"C01", "C05", "C11", "C14", "X01"}
     assert r["extraction"]["route"] == "text" and r["decision"]["approval_level"].startswith("Auto")
-    assert r["matches"] == [{"line": 0, "po_line": 1, "score": r["matches"][0]["score"]},
-                            {"line": 1, "po_line": 2, "score": r["matches"][1]["score"]}]
+    assert [(m["line"], m["po_line"]) for m in r["matches"]] == [(0, 1), (1, 2)]
+    m = r["matches"][0]  # the three-way match: invoice line, PO line from the ERP, goods receipts from the ERP
+    assert m["po"]["po_number"] == "PO-2026-0101" and m["po"]["doc"].startswith("/erp/docs/")
+    assert [g["grn"] for g in m["receipts"]] == ["GRN-5001"] and m["price_ok"] and m["qty_ok"]
     assert r["total_ms"] == sum(e["ms"] for e in r["events"])
 
 

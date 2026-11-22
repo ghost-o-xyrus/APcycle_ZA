@@ -26,13 +26,15 @@
     <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 16l4 4 8-9" fill="none" stroke="currentColor" stroke-width="3"/></svg>
     <span>Invoice desk</span>
   </a>
-  <span class="company">Kaveri Instruments (India, US, Germany), accounts payable</span>
+  <span class="company">Kaveri Instruments group · accounts payable</span>
   <nav aria-label="Main">
     <a href="#/process" data-nav="process">Process an invoice</a>
     <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
     <a href="#/how" data-nav="how">How it works</a>
+    <a href="/erp/" target="_blank" rel="noopener" id="erp-link">Kaveri ERP ↗</a>
   </nav>
   <span class="model" id="model-note" title="Which model reads scanned documents"></span>
+  <span class="erp-pill" id="erp-pill" title="Where purchase orders and goods receipts come from"></span>
 </header>
 
 <main id="view-process" class="process" hidden>
@@ -44,6 +46,7 @@
       <span class="drop-hint">or drop it here. Text PDFs and scans both work.</span>
     </label>
     <p class="error" id="upload-error" role="alert" hidden></p>
+    <p class="note own" id="own-invoice">Testing your own invoice? It is paid only if its <b>purchase order</b> and <b>goods receipt</b> agree with it. Put those in the ERP first: <a href="/erp/#/pos/new" target="_blank" rel="noopener">add the PO</a>, then <a href="/erp/#/receipts/new" target="_blank" rel="noopener">record the goods receipt</a>, then upload the invoice here.</p>
     <p class="note privacy" id="upload-privacy" hidden>Scans are read by a free cloud model in this demo. Upload sample or public invoices, not confidential ones. For private reading, choose a reader on your own server under Dashboard.</p>
     <div id="samples"></div>
   </aside>
@@ -76,7 +79,7 @@
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="checks" aria-selected="true">All checks</button>
       <button role="tab" data-tab="fields" aria-selected="false">What was read</button>
-      <button role="tab" data-tab="lines" aria-selected="false">Lines against the PO</button>
+      <button role="tab" data-tab="lines" aria-selected="false">Three-way match</button>
       <button role="tab" data-tab="history" aria-selected="false">History</button>
     </div>
     <div class="tab-body" id="tab-body"></div>
@@ -139,18 +142,19 @@
       <li>Most invoices do not print a PO number (about 1 in 5 real scans did), so the PO is found by matching the vendor's open POs.</li>
       <li>Government (GeM-style) POs quote prices including tax; invoices show tax separately. Prices are compared before tax.</li>
       <li>Goods are matched three ways (PO, goods receipt, invoice); services two ways (PO, invoice).</li>
+      <li>POs, goods receipts and the vendor master live in the company's ERP, not in the desk. Kaveri ERP stands in for NetSuite or SAP: its API is shaped like NetSuite's and needs an integration token, and the desk reads it on every run. Testers can add their own vendor, PO and goods receipt there (<a href="/erp/" target="_blank" rel="noopener">open Kaveri ERP</a>).</li>
       <li>One file is one invoice. Bundled invoices, or pages that were not read, go to a person.</li>
-      <li>The vendor master, POs, goods receipts and past invoices are a realistic invented company; all invoices are synthetic.</li>
+      <li>The ERP's vendor master, POs and goods receipts are a realistic invented company, each with a printed document; one real public GeM order is kept there for reference. The sample invoices are synthetic.</li>
     </ul>
   </section>
 
   <section aria-labelledby="limits-h">
     <h2 id="limits-h">What it does not do</h2>
     <ul class="plain">
-      <li>Pay vendors, post to an ERP or code invoices to ledger accounts.</li>
+      <li>Pay vendors, post approved bills back to the ERP, or code invoices to ledger accounts.</li>
       <li>Read languages other than English. Tax rules cover India, the US and the EU; GSTINs, EINs and German and French VAT IDs are checked for format and check digits, but not looked up in the EU's VIES register.</li>
       <li>Sign people in: whoever acts on a hold types their name.</li>
-      <li>Keep history across restarts on the free host: run the samples again after a restart.</li>
+      <li>Keep history across restarts on the free host: runs and records added in the ERP reset when the service restarts after being idle.</li>
       <li>The live demo reads scans with a free cloud tier, which may keep and review requests. That is fine for synthetic invoices. For real invoices, choose a private reader (NuExtract3 or Qwen3-VL on the company's own server, started with <code>scripts/serve_reader.py</code>) under Dashboard, or use a paid tier.</li>
     </ul>
   </section>

@@ -68,6 +68,15 @@ class Service:
         for d in (self.samples_dir, self.uploads_dir, self.pages_dir):
             os.makedirs(d, exist_ok=True)
         self.store = Store(db_path or os.path.join(data_dir, "apflow.db"))
+        # The ERP (system of record for vendors, POs, goods receipts) and the desk's connection to it.
+        from .erp.api import api_token
+        from .erp.db import ErpDB
+        from .erp_client import ErpClient
+        self.erp_db = ErpDB(os.path.join(data_dir, "erp"))
+        url = os.environ.get("APFLOW_ERP_URL", "").strip()
+        if url == "self":  # the ERP hosted in this service, reached over HTTP like any other
+            url = f"http://127.0.0.1:{os.environ.get('PORT', '8000')}"
+        self.erp = ErpClient(self.erp_db, url or None, os.environ.get("APFLOW_ERP_TOKEN") or api_token(self.erp_db))
         self.as_of = as_of
         self._samples = self._build_samples()
         # Readers: the cloud model (Gemini, Groq as backup) when a key is set; private models on
@@ -112,7 +121,7 @@ class Service:
 
     # ---------- runs ----------
     def _repo(self) -> Repo:
-        return Repo().with_ledger(self.store.ledger_entries(), self.store.approved_files())
+        return self.erp.repo(self.store.ledger_entries(), self.store.approved_files())
 
     def start_sample(self, sample_id: str) -> str:
         s = self._samples.get(sample_id)
@@ -294,7 +303,7 @@ class Service:
             failed = {c["check_id"]: c for c in run["checks"] if c["status"] == "fail"}
             if "C07" in failed and not (failed["C07"].get("evidence") or {}).get("vendor_id"):
                 raise ActionError("This vendor is not in the vendor master, so there are no verified bank details "
-                                  "to pay. Onboard the vendor first, then process the invoice again.")
+                                  "to pay. Add the vendor in the ERP, then use Check again.")
             if "C02" in failed:
                 raise ActionError("The invoice number, date or total could not be read, so this payment could not be "
                                   "checked for duplicates later. Ask the vendor for a corrected invoice, or reject it.")
@@ -321,6 +330,17 @@ class Service:
             self.store.add_action(run_id, actor, "confirm_po", reason or f"Confirmed {po}", {"po": po})
             self.store.add_event(run_id, {"stage": "human", "label": "PO confirmed by a person", "status": "ok",
                                           "ms": 0, "detail": f"{actor} confirmed {po}; checks run again"}, ev)
+            rr = reevaluate(run_id, run["file_path"], run["sha256"], ex, repo, self.as_of or date.today(),
+                            on_event=lambda e: self.store.add_event(run_id, asdict(e), ev))
+            self.store.finish_run(rr, evaluation=ev)
+        elif action == "recheck":  # a PO, goods receipt or vendor was added in the ERP since
+            repo = self._repo()
+            ex = Extraction.from_dict(run["extraction"])
+            ev = (run["evaluation"] or 1) + 1
+            self.store.add_action(run_id, actor, "recheck", reason or "Checked again against the ERP")
+            self.store.add_event(run_id, {"stage": "human", "label": "Checked again against the ERP", "status": "ok",
+                                          "ms": 0, "detail": f"{actor} re-ran the checks with the ERP's current vendors, "
+                                          "POs and goods receipts"}, ev)
             rr = reevaluate(run_id, run["file_path"], run["sha256"], ex, repo, self.as_of or date.today(),
                             on_event=lambda e: self.store.add_event(run_id, asdict(e), ev))
             self.store.finish_run(rr, evaluation=ev)

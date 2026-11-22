@@ -389,3 +389,101 @@ def build(spec: InvoiceSpec, out_dir: str, name: str) -> tuple[str, dict]:
     with open(os.path.join(out_dir, f"{name}.truth.json"), "w") as f:
         json.dump(t, f, indent=2)
     return pdf, t
+
+
+# ---------------- the buyer's own documents: purchase orders and goods receipts ----------------
+
+def _buyer_block(c, ent, x, y):
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x, y, ent.name)
+    c.setFont("Helvetica", 8.5)
+    c.drawString(x, y - 12, ent.address)
+    c.drawString(x, y - 24, f"{ent.tax_label}: {ent.tax_id}")
+
+
+def render_po_pdf(po, lines, vendor, path: str) -> None:
+    """A purchase order as our company prints and sends it to the supplier."""
+    ent = ENTITIES[po.entity]
+    W, H = A4
+    c = canvas.Canvas(path, pagesize=A4)
+    c.setTitle(f"Purchase Order {po.po_number}")
+    _buyer_block(c, ent, 40, H - 50)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawRightString(W - 40, H - 50, "PURCHASE ORDER")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(W - 40, H - 66, f"PO No: {po.po_number}")
+    c.drawRightString(W - 40, H - 78, f"PO Date: {po.po_date}")
+    c.drawRightString(W - 40, H - 90, f"Currency: {po.currency}")
+    y = H - 130
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(40, y, "Supplier:")
+    c.setFont("Helvetica", 9)
+    c.drawString(95, y, vendor.name)
+    tax = f"GSTIN: {vendor.gstin}" if vendor.country == "IN" else \
+        f"{'EIN' if vendor.country == 'US' else 'VAT ID'}: {vendor.tax_id}"
+    c.drawString(95, y - 12, f"{tax}    Vendor code: {vendor.vendor_id}")
+    y -= 44
+    cols = [40, 60, 270, 315, 360, 395, 460, 535]
+    heads = ["#", "Description", "HSN", "Qty", "Unit", "Rate", "Amount", "Tax %"]
+    c.setFont("Helvetica-Bold", 8.5)
+    for x, h in zip(cols, heads):
+        c.drawString(x, y, h)
+    c.line(40, y - 4, W - 40, y - 4)
+    c.setFont("Helvetica", 8.5)
+    y -= 18
+    total = 0.0
+    for l in lines:
+        amt = money(l.qty_ordered * l.unit_price)
+        total += amt
+        cells = [str(l.line_no), l.description, l.hsn or "", fmt_qty(l.qty_ordered), l.uom,
+                 f"{l.unit_price:,.2f}", f"{amt:,.2f}", f"{l.gst_rate:g}%"]
+        for x, cell in zip(cols, cells):
+            c.drawString(x, y, cell)
+        y -= 14
+    c.line(40, y + 6, W - 40, y + 6)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(360, y - 8, "Order value")
+    c.drawRightString(W - 60, y - 8, f"{po.currency} {total:,.2f}")
+    c.setFont("Helvetica", 8.5)
+    basis = "Rates are inclusive of tax." if any(l.price_basis == "incl_tax" for l in lines) else \
+        "Rates exclude tax; tax at the rate shown."
+    c.drawString(40, y - 34, basis)
+    c.drawString(40, y - 46, "Quote this PO number on every invoice. Goods are paid for as accepted at our goods receipt.")
+    c.drawString(40, y - 58, f"Kind: {po.kind}. Payment terms: net {vendor.terms_days} days from a correct invoice.")
+    c.save()
+
+
+def render_receipt_pdf(receipt_no, po, rows, vendor, receipt_date, received_by, path: str) -> None:
+    """A goods receipt: what Stores counted and accepted against each PO line.
+    rows: [(po_line, received, accepted)]"""
+    ent = ENTITIES[po.entity]
+    W, H = A4
+    c = canvas.Canvas(path, pagesize=A4)
+    title = {"US": "RECEIVING REPORT", "DE": "GOODS RECEIPT (WARENEINGANG)"}.get(ent.country, "GOODS RECEIPT NOTE")
+    c.setTitle(f"{title} {receipt_no}")
+    _buyer_block(c, ent, 40, H - 50)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawRightString(W - 40, H - 50, title)
+    c.setFont("Helvetica", 9)
+    c.drawRightString(W - 40, H - 66, f"GRN No: {receipt_no}")
+    c.drawRightString(W - 40, H - 78, f"Receipt Date: {receipt_date}")
+    c.drawRightString(W - 40, H - 90, f"Against PO No: {po.po_number}")
+    c.drawString(40, H - 120, f"Supplier: {vendor.name} ({vendor.vendor_id})")
+    c.drawString(40, H - 132, f"Received and inspected by: {received_by}")
+    y = H - 168
+    cols = [40, 75, 300, 370, 435, 500]
+    c.setFont("Helvetica-Bold", 8.5)
+    for x, h in zip(cols, ["PO line", "Description", "Ordered", "Received", "Accepted", "Rejected"]):
+        c.drawString(x, y, h)
+    c.line(40, y - 4, W - 40, y - 4)
+    c.setFont("Helvetica", 8.5)
+    y -= 18
+    for pl, rec, acc in rows:
+        for x, cell in zip(cols, [str(pl.line_no), pl.description, fmt_qty(pl.qty_ordered), fmt_qty(rec), fmt_qty(acc),
+                                  fmt_qty(rec - acc)]):
+            c.drawString(x, y, cell)
+        y -= 14
+    c.line(40, y + 6, W - 40, y + 6)
+    c.drawString(40, y - 20, "Rejected quantities are returned to the supplier and must not be invoiced.")
+    c.drawString(40, y - 50, "Stores signature: ____________________        Quality check: ____________________")
+    c.save()

@@ -9,17 +9,19 @@ RUN apt-get update \
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH PYTHONUNBUFFERED=1 \
-    APFLOW_DATA=/home/user/data APFLOW_MODEL=auto PORT=8000
+    APFLOW_DATA=/home/user/data APFLOW_MODEL=auto PORT=8000 APFLOW_ERP_URL=self
 WORKDIR /home/user/app
 
 COPY --chown=user requirements-app.txt .
 RUN pip install --no-cache-dir --user -r requirements-app.txt
 COPY --chown=user apflow ./apflow
 
-# Build the 20 sample invoices now, so a small instance starts serving at once.
+# Build the sample invoices and load the ERP's records (POs, goods receipts, their documents) now,
+# so a small instance starts serving at once. The desk reads the ERP over HTTP with its token (APFLOW_ERP_URL=self).
 RUN python -c "from apflow.service import Service; Service('/home/user/data', model_mode='none')"
 
 # The host sets PORT (Render uses 10000); the app listens on whatever it is given.
 EXPOSE 8000
-# Secrets go in the host's environment settings, never in this file: GEMINI_API_KEY, optional GROQ_API_KEY.
+# Secrets go in the host's environment settings, never in this file: GEMINI_API_KEY, optional GROQ_API_KEY,
+# optional APFLOW_ERP_TOKEN (otherwise the ERP generates one and keeps it with its data).
 CMD ["python", "-m", "apflow.web.app"]

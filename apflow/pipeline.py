@@ -25,7 +25,7 @@ STAGES = [
     ("classify", "Check it is an invoice", ["C01"]),
     ("validate", "Check the document itself", ["X01", "C02", "C03", "C04", "C05", "C06"]),
     ("vendor", "Match the vendor", ["C07", "C08"]),
-    ("po", "Match the purchase order", ["C09", "C10", "C11", "C12", "C13"]),
+    ("po", "Three-way match: PO and goods receipt", ["C09", "C10", "C11", "C12", "C13"]),
     ("risk", "Look for duplicates, date and currency problems", ["C14", "C15", "C16"]),
     ("decide", "Decide", []),
 ]
@@ -100,8 +100,7 @@ def _evaluate(rr: RunResult, ex: Extraction, repo: Repo, as_of: date, route_issu
     rr.vendor_name = ctx.vendor.name if ctx.vendor else ex.get("vendor_name")
     rr.po_number, rr.po_how = ctx.po_number, ctx.po_how or None
     rr.subtotal = ex.get("subtotal") or sum(l.amount for l in ex.lines)
-    rr.matches = [{"line": i, "po_line": pl.line_no if pl else None, "score": sc}
-                  for i, (l, pl, sc) in enumerate(ctx.matches)]
+    rr.matches = [_three_way(i, l, pl, sc, ctx, repo) for i, (l, pl, sc) in enumerate(ctx.matches)]
     by_id = {c.id: c for c in checks}
     details = {
         "classify": lambda: (ex.get('doc_type') or 'unknown').replace('_', ' '),
@@ -192,6 +191,31 @@ def _unreadable(rr: RunResult, reason: str, emit, t) -> RunResult:
                            summary=f"Rejected: {reason.lower()}.")
     emit(StageEvent("decide", "fail", 0, "reject: file could not be opened", LABEL["decide"]))
     return rr
+
+
+def _three_way(i, l, pl, sc, ctx, repo) -> dict:
+    """One invoice line next to its PO line and the goods receipts against it, with each verdict."""
+    row = {"line": i, "po_line": pl.line_no if pl else None, "score": sc,
+           "invoice": {"description": l.description, "qty": l.qty, "unit_price": l.unit_price, "amount": l.amount}}
+    if pl is None:
+        return row
+    s = repo.settings
+    pre = pl.unit_price_pre_tax
+    tol = max(s.price_abs_tol_per_unit, s.price_rel_tol * pre)
+    receipts = [{"grn": g.grn_number, "date": g.receipt_date, "received": g.qty_received, "accepted": g.qty_accepted,
+                 "by": g.received_by, "doc": getattr(repo, "receipt_docs", {}).get(g.grn_number)}
+                for g in repo.grns if g.po_number == pl.po_number and g.line_no == pl.line_no]
+    billed = repo.billed_qty(pl.po_number, pl.line_no)
+    basis = sum(r["accepted"] for r in receipts) if pl.requires_grn else pl.qty_ordered
+    row.update({
+        "po": {"po_number": pl.po_number, "line_no": pl.line_no, "description": pl.description, "ordered": pl.qty_ordered,
+               "uom": pl.uom, "unit_price": pl.unit_price, "price_pre_tax": round(pre, 2), "basis": pl.price_basis,
+               "tax_rate": pl.gst_rate, "doc": getattr(repo, "po_docs", {}).get(pl.po_number)},
+        "receipts": receipts, "needs_receipt": pl.requires_grn, "billed_before": billed,
+        "available": round(basis - billed, 4), "price_ok": abs(l.unit_price - pre) <= tol + 1e-9, "tolerance": round(tol, 2),
+        "qty_ok": l.qty <= basis - billed + 1e-9,
+    })
+    return row
 
 
 def reevaluate(run_id: str, file: str, sha: str, extraction: Extraction, repo: Repo, as_of: date,

@@ -55,14 +55,15 @@ button, input, textarea { font: inherit; color: inherit; }
   display: flex; align-items: center; gap: var(--s5); padding: 0 var(--s5); height: 56px;
   background: var(--panel); border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 5;
 }
-.brand { display: flex; align-items: center; gap: var(--s2); color: var(--stamp); text-decoration: none; font-weight: 700; font-size: 17px; }
+.brand { display: flex; align-items: center; gap: var(--s2); color: var(--stamp); text-decoration: none; font-weight: 700; font-size: 17px; white-space: nowrap; }
 .brand span { color: var(--ink); }
-.company { color: var(--ink-2); font-size: 13px; }
+.company { color: var(--ink-2); font-size: 13px; white-space: nowrap; }
+@media (max-width: 1360px) { .company { display: none; } }
 .bar nav { display: flex; gap: var(--s1); margin-left: var(--s4); }
-.bar nav a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; border-radius: var(--r-sm); font-size: 14px; }
+.bar nav a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; border-radius: var(--r-sm); font-size: 14px; white-space: nowrap; }
 .bar nav a:hover { color: var(--ink); background: var(--rule-2); }
 .bar nav a[aria-current="page"] { color: var(--ink); font-weight: 700; box-shadow: inset 0 -2px 0 var(--stamp); border-radius: 0; }
-.model { margin-left: auto; font-size: 12px; color: var(--ink-3); max-width: 340px; text-align: right; }
+.model { margin-left: auto; font-size: 12px; color: var(--ink-3); max-width: 300px; text-align: right; }
 
 /* ---------- process view ---------- */
 .process {
@@ -300,3 +301,14 @@ ul.plain li { margin-bottom: 6px; }
 .reader-find label { font-size: 13px; color: var(--ink-2); }
 .reader-find input { border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 6px 8px; background: var(--panel); min-width: 220px; }
 .privacy { margin-top: 0; margin-bottom: var(--s3); }
+
+/* the ERP connection and the three-way match */
+.erp-pill { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--good-bg); color: var(--good-ink); white-space: nowrap; }
+.erp-pill[data-state="down"] { background: var(--bad-bg); color: var(--bad-ink); }
+.erp-pill:empty { display: none; }
+.own { margin: 0 0 var(--s3); font-size: 12.5px; }
+.erp-fix { margin: var(--s2) 0; }
+table.three-way td { vertical-align: top; font-size: 13px; line-height: 1.45; }
+table.three-way td > div + div { margin-top: 2px; }
+.ok-mark { color: var(--good-ink); }
+.wide { overflow-x: auto; }
