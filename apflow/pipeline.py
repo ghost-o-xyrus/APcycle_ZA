@@ -58,6 +58,8 @@ class RunResult:
     po_how: str | None = None
     subtotal: float | None = None
     matches: list = field(default_factory=list)  # [{line, po_line, score}]
+    currency: str = "INR"
+    entity: str | None = None  # which of our companies is billed
 
     def to_dict(self) -> dict:
         return {"run_id": self.run_id, "file": self.file, "sha256": self.sha256,
@@ -108,7 +110,8 @@ def _evaluate(rr: RunResult, ex: Extraction, repo: Repo, as_of: date, route_issu
                            else "not in vendor master"),
         "po": lambda: ({"printed": f"{ctx.po_number} (printed on invoice)",
                         "confirmed": f"{ctx.po_number} (confirmed by a person)",
-                        "inferred": f"{ctx.po_number} (inferred, needs confirming)"}.get(ctx.po_how, "no PO found")),
+                        "inferred": f"{ctx.po_number} (inferred, needs confirming)"}.get(ctx.po_how, "no PO found"))
+                      + (f"; billed to {ctx.entity.name}" if ctx.entity else ""),
         "risk": lambda: "no duplicate, dates and currency fine" if all(
             by_id.get(i) is None or by_id[i].status != "fail" for i in ("C14", "C15", "C16")) else "needs a look",
     }
@@ -118,7 +121,8 @@ def _evaluate(rr: RunResult, ex: Extraction, repo: Repo, as_of: date, route_issu
         emit(StageEvent(stage, st, ms if stage == "classify" else 0,
                         details[stage]() if res else "skipped: not an invoice", label, [_brief(c) for c in res]))
     t = time.perf_counter()
-    rr.decision = decide(checks, ex, repo.settings)
+    rr.decision = decide(checks, ex, repo.settings, ctx.cur)
+    rr.currency, rr.entity = ctx.cur, (ctx.entity.code if ctx.entity else None)
     d = rr.decision
     n = len(d.reasons)
     short = {"APPROVE": "approve" + ("; needs manager sign-off" if (d.approval_level or "").startswith("Manager") else ", within AP limit"),

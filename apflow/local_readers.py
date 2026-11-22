@@ -55,11 +55,16 @@ NUEXTRACT_TEMPLATE = {
     "bank_account": "verbatim-string",
     "ifsc": "verbatim-string",
     "currency": ["INR", "USD", "EUR", "GBP", "JPY", "other"],
+    "tax": "number",
+    "vendor_tax_id": "verbatim-string",
+    "buyer_tax_id": "verbatim-string",
+    "buyer_name": "verbatim-string",
     "lines": [{"description": "verbatim-string", "hsn": "verbatim-string", "qty": "number",
                "uom": "verbatim-string", "unit_price": "number", "amount": "number"}],
 }
 NUEXTRACT_INSTRUCTIONS = (
-    "A supplier tax invoice from India. vendor_gstin is the seller's GSTIN, buyer_gstin the bill-to GSTIN. "
+    "A supplier invoice (India, US or Europe). vendor_gstin and buyer_gstin are Indian GSTINs; outside India use "
+    "vendor_tax_id and buyer_tax_id (EIN or VAT ID) and put VAT or sales tax in tax. "
     "subtotal is the pre-tax total; cgst, sgst and igst are tax amounts in rupees, not rates; total includes tax. "
     "unit_price and amount are pre-tax. po_reference is the buyer's purchase order number if printed. "
     "Numbers carry no currency symbol or thousands separators.")

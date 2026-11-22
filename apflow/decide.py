@@ -1,13 +1,14 @@
 """Decision policy: from check results to Approve / Hold / Reject. No AI here."""
 from __future__ import annotations
 
-from .money import rs
+from .money import fmt, to_inr
 from .schema import CheckResult, Decision, Extraction
 
 OWNER_PRIORITY = ["Treasury", "Procurement", "Stores", "AP"]  # fraud risk first
 
 
-def decide(checks: list[CheckResult], ex: Extraction, settings) -> Decision:
+def decide(checks: list[CheckResult], ex: Extraction, settings, currency: str | None = "INR") -> Decision:
+    rs = lambda x: fmt(x, currency)  # noqa: E731  amounts in the invoice's own currency
     fails = [c for c in checks if c.status == "fail"]
     rejects = [c for c in fails if c.severity == "reject"]
     holds = [c for c in fails if c.severity == "hold"]
@@ -38,7 +39,9 @@ def decide(checks: list[CheckResult], ex: Extraction, settings) -> Decision:
                          f"{rs(d.approvable_amount)} can be approved now; {rs(d.held_amount)} is held for {top.owner}.")
         return d
 
-    level = "Manager sign-off" if sub > settings.manager_approval_above else "Auto (within AP limit)"
+    in_inr = to_inr(sub, currency, settings)  # one approval limit for all our companies, in rupees
+    level = "Manager sign-off" if in_inr > settings.manager_approval_above else "Auto (within AP limit)"
     passed = sum(1 for c in checks if c.status == "pass")
     return Decision("APPROVE", [f"All {passed} checks passed"], approval_level=level,
-                    summary=f"Approved: {rs(sub)} pre-tax, all {passed} checks passed. Approval: {level}.")
+                    summary=f"Approved: {rs(sub)} pre-tax" + (f" (about {fmt(in_inr, 'INR')})" if (currency or "INR") != "INR" else "")
+                            + f", all {passed} checks passed. Approval: {level}.")

@@ -97,7 +97,7 @@ def postprocess(ex: Extraction, settings=SETTINGS) -> Extraction:
             if is_valid(f.value):
                 f.confidence = max(f.confidence, 0.9)
     sub, tot = ex.get("subtotal"), ex.get("total")
-    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst"))
+    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst", "tax"))
     lines_ok = bool(ex.lines) and sub is not None and abs(sum(l.amount for l in ex.lines) - sub) <= settings.money_abs_tol
     totals_ok = sub is not None and tot is not None and abs(sub + tax - tot) <= settings.money_abs_tol
     if totals_ok:
@@ -138,17 +138,21 @@ def extract_ocr_route(pdf_path: str) -> Extraction:
 
 # ---------------- LLM vision route ----------------
 
+EXTRA_FIELDS = ("currency", "tax", "vendor_tax_id", "buyer_tax_id", "buyer_name")
 NON_INVOICE = ("quotation", "credit_note", "purchase_order", "delivery_challan", "receipt")
 
-LLM_PROMPT = """You are reading one supplier invoice for an accounts payable team in India.
+LLM_PROMPT = """You are reading one supplier invoice for an accounts payable team (India, US or Europe).
 Return ONLY a JSON object with these keys (null when absent, never guess):
 doc_type (invoice|credit_note|debit_note|quotation|purchase_order|receipt|delivery_challan|unknown); judge by the document's title, not by fields such as \"Estimate #\" or \"PO Number\",
 vendor_name, vendor_gstin, buyer_gstin, invoice_number, invoice_date (YYYY-MM-DD),
 po_reference, subtotal, cgst, sgst, igst, total, bank_account, ifsc,
-currency (ISO code of the amounts as printed, e.g. INR, USD),
+currency (ISO code of the amounts as printed, e.g. INR, USD, EUR),
+tax (VAT or sales tax amount when the invoice is not under Indian GST, else 0),
+vendor_tax_id and buyer_tax_id (EIN or VAT ID when not an Indian GSTIN), buyer_name (the bill-to company),
 lines: [{description, hsn, qty, uom, unit_price, amount}],
 confidence: {<field>: 0..1 for each header field}.
-Amounts are numbers without currency symbols or commas, pre-tax unless the key is total."""
+Amounts are numbers without currency symbols or commas, pre-tax unless the key is total.
+bank_account is the account number or IBAN; ifsc is the IFSC, BIC or US routing number."""
 
 
 class VisionClient(Protocol):
@@ -166,8 +170,16 @@ def extraction_from_llm_json(raw: str) -> Extraction:
         v = data.get(k)
         c = float(conf.get(k, 0.85 if v not in (None, "") else 0.0))
         ex.fields[k] = Field(v, min(c, 0.9), "vision model")  # self-reported confidence is capped
-    cur = data.get("currency")
-    ex.fields["currency"] = Field(str(cur).upper()[:3] if cur else None, 0.85 if cur else 0.0, "vision model")
+    for k in EXTRA_FIELDS:  # outside the confidence average: absent on most Indian invoices
+        v = data.get(k)
+        if k == "currency" and v:
+            v = str(v).upper()[:3]
+        if k == "tax":
+            try:
+                v = float(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                v = None
+        ex.fields[k] = Field(v, 0.85 if v not in (None, "") else 0.0, "vision model")
     for l in data.get("lines") or []:
         try:
             ex.lines.append(Line(description=str(l.get("description", "")), qty=float(l["qty"]),
@@ -217,7 +229,7 @@ def needs_escalation(ex: Extraction, settings=SETTINGS) -> list[str]:
     if not ex.lines:
         why.append("no line items")
     sub, tot = ex.get("subtotal"), ex.get("total")
-    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst"))
+    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst", "tax"))
     if sub is not None and tot is not None and abs(sub + tax - tot) > settings.money_abs_tol:
         why.append("totals do not reconcile")
     if ex.lines and sub is not None and abs(sum(l.amount for l in ex.lines) - sub) > settings.money_abs_tol:

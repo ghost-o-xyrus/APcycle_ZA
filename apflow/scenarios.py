@@ -117,6 +117,27 @@ def scenarios() -> list[Scenario]:
         InvoiceSpec(V["V006"], "KPH-221", "2026-11-02", "PO-2026-0111",
                     [line("PO-2026-0111", 1, 500)], layout="C"),
         "HOLD", {"C07"}))
+    # --- other countries: our US and German companies, and imports into India ---
+    S.append(Scenario("I1", "US company: Texas supplier, sales tax, PO printed",
+        InvoiceSpec(V["V101"], "LSM-30417", "2026-10-28", "PO-2026-0201",
+                    [line("PO-2026-0201", 1, 10), line("PO-2026-0201", 2, 2)], layout="X", entity="US"),
+        "APPROVE", tags=("international",)))
+    S.append(Scenario("I2", "India imports from Germany: euro invoice, no GST, manager sign-off",
+        InvoiceSpec(V["V102"], "RL-2026-0451", "2026-11-02", "PO-2026-0202",
+                    [line("PO-2026-0202", 1, 2), line("PO-2026-0202", 2, 2)], layout="X", entity="IN"),
+        "APPROVE", tags=("international", "tier")))
+    S.append(Scenario("I3", "German company: French supplier charged VAT instead of reverse charge",
+        InvoiceSpec(V["V103"], "ODL-2026-118", "2026-11-05", "PO-2026-0203",
+                    [SpecLine("Optical Bench Alignment Service", "", "job", 4, 1200.00, 20)], layout="X", entity="DE"),
+        "HOLD", {"C06"}, tags=("international",)))
+    S.append(Scenario("I4", "Euro PO, invoice in US dollars",
+        InvoiceSpec(V["V102"], "RL-2026-0467", "2026-11-09", "PO-2026-0202",
+                    [line("PO-2026-0202", 2, 1)], layout="X", entity="IN", currency="USD"),
+        "HOLD", {"C16"}, tags=("international",)))
+    S.append(Scenario("I5", "EU invoice without the supplier's VAT ID",
+        InvoiceSpec(V["V102"], "RL-2026-0472", "2026-11-12", "PO-2026-0204",
+                    [line("PO-2026-0204", 1, 5)], layout="X", entity="DE", show_vendor_tax_id=False),
+        "HOLD", {"C03"}, tags=("international",)))
     return S
 
 
@@ -129,7 +150,10 @@ INV_PREFIX = {"V001": "DLS/2026/", "V002": "NSW/INV/", "V003": "SFS/26-27/", "V0
 def random_clean(seed: int, layout: str | None = None, scanned: bool | None = None) -> InvoiceSpec:
     rng = random.Random(seed)
     repo = Repo()
-    pos = [p for p in POS if p.status == "open" and repo.vendors[p.vendor_id].status == "approved"]
+    # Layouts A-D are Indian invoices; layout X is a supplier abroad (US or EU conventions).
+    abroad = layout == "X"
+    pos = [p for p in POS if p.status == "open" and repo.vendors[p.vendor_id].status == "approved"
+           and (repo.vendors[p.vendor_id].country != "IN") == abroad]
     po = rng.choice(pos)
     pls = repo.lines_of(po.po_number)
     chosen = rng.sample(pls, k=rng.randint(1, len(pls)))
@@ -142,4 +166,4 @@ def random_clean(seed: int, layout: str | None = None, scanned: bool | None = No
     d = f"2026-{rng.randint(10, 11)}-{rng.randint(1, 28):02d}"
     return InvoiceSpec(v, num, d, po.po_number, lines,
                        layout=layout or rng.choice("ABC"),
-                       scanned=rng.random() < 0.35 if scanned is None else scanned, seed=seed)
+                       scanned=rng.random() < 0.35 if scanned is None else scanned, seed=seed, entity=po.entity)

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS runs (
   state TEXT,                       -- running | done | error
   error TEXT,
   route TEXT, vendor_id TEXT, vendor_name TEXT, invoice_number TEXT, invoice_date TEXT,
-  po_number TEXT, po_how TEXT, subtotal REAL, total REAL,
+  po_number TEXT, po_how TEXT, subtotal REAL, total REAL, currency TEXT DEFAULT 'INR', entity TEXT,
   outcome TEXT,                     -- system decision: APPROVE | HOLD | REJECT
   final_status TEXT,                -- approved | part_approved | rejected | on_hold
   owner TEXT, question TEXT, summary TEXT, approvable REAL, held REAL, approval_level TEXT,
@@ -52,6 +52,10 @@ class Store:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+        for col, decl in (("currency", "TEXT DEFAULT 'INR'"), ("entity", "TEXT")):  # stores made before these existed
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
 
     @contextmanager
     def tx(self):
@@ -88,14 +92,14 @@ class Store:
             c.execute("""UPDATE runs SET state='done', route=?, vendor_id=?, vendor_name=?, invoice_number=?,
                          invoice_date=?, po_number=?, po_how=?, subtotal=?, total=?, outcome=?, final_status=?,
                          owner=?, question=?, summary=?, approvable=?, held=?, approval_level=?, total_ms=?,
-                         evaluation=?, extraction_json=?, decision_json=?, matches_json=?, route_log_json=?
-                         WHERE run_id=?""",
+                         evaluation=?, extraction_json=?, decision_json=?, matches_json=?, route_log_json=?,
+                         currency=?, entity=? WHERE run_id=?""",
                       (ex.route, rr.vendor_id, rr.vendor_name, ex.get("invoice_number"), ex.get("invoice_date"),
                        rr.po_number, rr.po_how, rr.subtotal, ex.get("total"), d.outcome,
                        FINAL_FROM_OUTCOME[d.outcome], d.owner, d.question, d.summary, d.approvable_amount,
                        d.held_amount, d.approval_level, sum(e.ms for e in rr.events), evaluation,
                        json.dumps(ex.to_dict()), json.dumps(asdict(d)), json.dumps(rr.matches),
-                       json.dumps(rr.route_log), rr.run_id))
+                       json.dumps(rr.route_log), getattr(rr, "currency", "INR"), getattr(rr, "entity", None), rr.run_id))
 
     def fail_run(self, run_id, error: str):
         with self.tx() as c:
@@ -145,7 +149,7 @@ class Store:
 
     def list_runs(self, outcome=None, owner=None, final_status=None, limit=500) -> list[dict]:
         q, args = "SELECT run_id, created_at, file_name, sample_id, state, route, vendor_name, invoice_number, " \
-                  "po_number, po_how, subtotal, total, outcome, final_status, owner, summary, total_ms, error " \
+                  "po_number, po_how, subtotal, total, currency, entity, outcome, final_status, owner, summary, total_ms, error " \
                   "FROM runs WHERE 1=1", []
         for col, val in (("outcome", outcome), ("owner", owner), ("final_status", final_status)):
             if val:
@@ -206,6 +210,8 @@ class Store:
                 "GROUP BY c.check_id, c.name ORDER BY n DESC, c.check_id").fetchall()
             stage_ms = self._conn.execute(
                 "SELECT stage, AVG(ms) FROM events GROUP BY stage").fetchall()
+        from .money import to_inr
+        inr = lambda r, x: to_inr(x, r.get("currency") or "INR")  # noqa: E731  one scale for all companies
         n = len(runs)
         no_touch = [r for r in runs if r["outcome"] == "APPROVE" and r["run_id"] not in acted]
         open_holds = [r for r in runs if r["final_status"] == "on_hold"]
@@ -213,7 +219,7 @@ class Store:
         for r in open_holds:
             o = by_owner.setdefault(r["owner"] or "Unassigned", {"count": 0, "amount": 0.0})
             o["count"] += 1
-            o["amount"] += r["total"] or 0.0
+            o["amount"] += inr(r, r["total"] or 0.0)
         route = {}
         for r in runs:
             route[r["route"]] = route.get(r["route"], 0) + 1
@@ -224,8 +230,8 @@ class Store:
             "outcomes": outcomes,
             "no_touch_rate": (len(no_touch) / n) if n else None,
             "open_holds": len(open_holds),
-            "amount_waiting": round(sum(r["total"] or 0.0 for r in open_holds), 2),
-            "amount_approved": round(sum((r["total"] or 0.0) * ((r["approvable"] or 0) / r["subtotal"]
+            "amount_waiting": round(sum(inr(r, r["total"] or 0.0) for r in open_holds), 2),
+            "amount_approved": round(sum(inr(r, r["total"] or 0.0) * ((r["approvable"] or 0) / r["subtotal"]
                                          if r["final_status"] == "part_approved" and r["subtotal"] else 1.0)
                                          for r in runs if r["final_status"] in ("approved", "part_approved")), 2),
             "median_ms": ms[len(ms) // 2] if ms else None,
@@ -233,4 +239,5 @@ class Store:
             "queue_by_owner": by_owner,
             "routes": route,
             "stage_ms": {s: round(v or 0) for s, v in stage_ms},
+            "currencies": sorted({r.get("currency") or "INR" for r in runs}),
         }

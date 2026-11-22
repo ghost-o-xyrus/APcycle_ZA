@@ -46,7 +46,7 @@ def test_index_and_static(client):
 
 def test_samples(client):
     s = client.get("/api/samples").json["samples"]
-    assert len(s) == 20 and {"id", "title", "group", "scanned", "vendor"} <= set(s[0])
+    assert len(s) == 25 and {"id", "title", "group", "scanned", "vendor"} <= set(s[0])
     assert "expect" not in s[0]  # the answer key is not sent to the browser
 
 

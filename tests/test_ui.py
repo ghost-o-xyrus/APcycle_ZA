@@ -185,3 +185,16 @@ def test_reader_panel_finds_switches_and_restores(page, base_url, tmp_path, monk
         page.errors[:] = [e for e in page.errors if "400" not in e]  # the refused address is an expected 400
     finally:
         srv.shutdown()
+
+
+def test_us_invoice_shows_dollars_and_tax_numbers(page, base_url):
+    page.goto(f"{base_url}/#/process")
+    pick(page, "I1")
+    assert stamp_text(page) == "APPROVED"
+    assert "$6,224.38" in page.inner_text("#decision")
+    page.click('[data-tab="fields"]')
+    body = page.inner_text("#tab-body")
+    assert "Vendor tax number" in body and "74-2918365" in body and "Kaveri Instruments Inc." in body
+    assert "Vendor GSTIN" not in body  # the Indian fields are hidden when empty on a US invoice
+    page.click('[data-tab="checks"]')
+    assert "US sales tax charged ($474.38)" in page.inner_text("#tab-body")

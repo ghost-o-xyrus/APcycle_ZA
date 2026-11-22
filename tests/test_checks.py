@@ -280,14 +280,3 @@ def test_credit_note_routed_not_rejected():
     c = check(t, "C01")[0]
     assert c.severity == "hold" and c.owner == "AP"
 
-
-def test_c16_foreign_currency_is_held():
-    from apflow.checks import c16_currency
-    from apflow.schema import Extraction, Field
-
-    class C:  # minimal context
-        def __init__(self, cur):
-            self.ex = Extraction(route="text", fields={"currency": Field(cur, 0.95, "")})
-    assert c16_currency(C(None)).status == "pass" and c16_currency(C("INR")).status == "pass"
-    r = c16_currency(C("USD"))
-    assert r.status == "fail" and r.severity == "hold" and r.owner == "AP" and "Treasury" in r.question and "USD" in r.message

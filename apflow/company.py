@@ -30,6 +30,9 @@ class Vendor:
     ifsc: str
     status: str  # approved | pending | blocked
     terms_days: int = 30
+    country: str = "IN"
+    tax_id: str = ""      # outside India: EIN (US) or VAT ID (EU). In India the GSTIN above.
+    currency: str = "INR"
 
 
 @dataclass
@@ -39,6 +42,20 @@ class PO:
     po_date: str
     status: str  # open | closed | cancelled
     kind: str  # goods | services
+    entity: str = "IN"     # which of our companies raised it
+    currency: str = "INR"
+
+
+@dataclass(frozen=True)
+class Entity:
+    """One of our companies. Each has its own tax registration, currency and tax rules."""
+    code: str
+    name: str
+    country: str
+    tax_id: str
+    currency: str
+    address: str
+    tax_label: str  # what the tax number is called on an invoice
 
 
 @dataclass
@@ -51,7 +68,7 @@ class POLine:
     qty_ordered: float
     unit_price: float
     price_basis: str  # excl_tax | incl_tax
-    gst_rate: float
+    gst_rate: float  # the tax rate on the line: GST in India, sales tax in the US, VAT in the EU
     requires_grn: bool
 
     @property
@@ -84,6 +101,34 @@ class LedgerInvoice:
     lines: list = field(default_factory=list)  # [{line_no, qty, amount, description}]
 
 
+from .taxid import de_with_check, fr_key  # noqa: E402
+
+ENTITIES = {
+    "IN": Entity("IN", SETTINGS.company_name, "IN", SETTINGS.company_gstin, "INR",
+                 "Plot 14, KIADB Industrial Area, Bengaluru 560058", "GSTIN"),
+    "US": Entity("US", "Kaveri Instruments Inc.", "US", "84-3729106", "USD",
+                 "1200 Research Blvd, Austin, TX 78759", "EIN"),
+    "DE": Entity("DE", "Kaveri Instruments GmbH", "DE", de_with_check("31845627"), "EUR",
+                 "Carl-Zeiss-Strasse 7, 07743 Jena", "VAT ID"),
+}
+EU_COUNTRIES = {"AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "EL", "ES", "FI", "FR", "HR", "HU", "IE", "IT",
+                "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK"}
+
+def regime(vendor_country: str, entity_country: str) -> str:
+    """How tax appears on a supplier's invoice, from where the supplier and our company are."""
+    if vendor_country == "IN" and entity_country == "IN":
+        return "gst"
+    if entity_country == "IN":
+        return "import_india"          # no Indian GST on the invoice; IGST at customs or reverse charge
+    if vendor_country == entity_country == "US":
+        return "us_sales_tax"
+    if vendor_country == entity_country:
+        return "vat_domestic"
+    if vendor_country in EU_COUNTRIES and entity_country in EU_COUNTRIES:
+        return "eu_reverse_charge"
+    return "import"                    # import VAT or duties are paid at the border, not to the supplier
+
+
 VENDORS = [
     Vendor("V001", "Deccan Lab Supplies", G("29", "AADCD4417K"), "29", "50200011223344", "HDFC0001234", "approved"),
     Vendor("V002", "Narmada Scientific Works", G("07", "AAACN4089K"), "07", "00911020045566", "ICIC0000091", "approved"),
@@ -93,6 +138,13 @@ VENDORS = [
     Vendor("V006", "Kaveri Print House", G("29", "AAJPK3345R"), "29", "40011223344", "CNRB0003300", "pending"),
     Vendor("V007", "Vindhya Traders", G("23", "ABCFV6612M"), "23", "55667788990", "PUNB0012300", "blocked"),
     Vendor("V008", "Ganga Calibration Labs", G("09", "AAGCG1188H"), "09", "66001122334", "UTIB0000456", "approved"),
+    # Outside India. bank_account holds the account or IBAN; ifsc holds the bank code (ABA routing or BIC).
+    Vendor("V101", "Lone Star Metrology LLC", "", "", "4410029384", "111000025", "approved",
+           country="US", tax_id="74-2918365", currency="USD"),
+    Vendor("V102", "Rhein Labortechnik GmbH", "", "", "DE89370400440532013000", "COBADEFFXXX", "approved",
+           country="DE", tax_id=de_with_check("29475016"), currency="EUR"),
+    Vendor("V103", "Optique de Lyon SAS", "", "", "FR1420041010050500013M02606", "PSSTFRPPLYO", "approved",
+           country="FR", tax_id="FR" + fr_key("487215039") + "487215039", currency="EUR"),
 ]
 
 POS = [
@@ -108,6 +160,10 @@ POS = [
     PO("PO-2026-0110", "V002", "2026-10-12", "open", "goods"),      # high value
     PO("PO-2026-0111", "V006", "2026-10-15", "open", "goods"),
     PO("PO-2026-0112", "V001", "2026-10-20", "open", "goods"),      # third V001 PO, different items
+    PO("PO-2026-0201", "V101", "2026-10-06", "open", "goods", entity="US", currency="USD"),
+    PO("PO-2026-0202", "V102", "2026-09-28", "open", "goods", entity="IN", currency="EUR"),  # import into India
+    PO("PO-2026-0203", "V103", "2026-10-12", "open", "services", entity="DE", currency="EUR"),  # intra-EU service
+    PO("PO-2026-0204", "V102", "2026-10-20", "open", "goods", entity="DE", currency="EUR"),  # domestic Germany
 ]
 
 PO_LINES = [
@@ -129,6 +185,16 @@ PO_LINES = [
     POLine("PO-2026-0110", 1, "UPLC Liquid Chromatograph System", "9027", "pcs", 1, 1650000.00, "incl_tax", 18, True),
     POLine("PO-2026-0111", 1, "Printed Lab Notebook A4", "4820", "pcs", 500, 120.00, "excl_tax", 12, True),
     POLine("PO-2026-0112", 1, "Fume Hood Filter Cartridge", "8421", "pcs", 10, 4200.00, "excl_tax", 18, True),
+    # Texas sales tax 8.25%
+    POLine("PO-2026-0201", 1, "CMM Probe Tip Set", "", "set", 10, 285.00, "excl_tax", 8.25, True),
+    POLine("PO-2026-0201", 2, "Granite Surface Plate 24x36 in", "", "pcs", 2, 1450.00, "excl_tax", 8.25, True),
+    # Export from Germany: no VAT on the supplier's invoice; IGST is paid at Indian customs.
+    POLine("PO-2026-0202", 1, "Analytical Balance 220 g", "", "pcs", 2, 3150.00, "excl_tax", 0, True),
+    POLine("PO-2026-0202", 2, "Calibration Weight Set E2", "", "set", 2, 750.00, "excl_tax", 0, True),
+    # France to Germany, business to business: reverse charge, no VAT on the invoice.
+    POLine("PO-2026-0203", 1, "Optical Bench Alignment Service", "", "job", 4, 1200.00, "excl_tax", 0, False),
+    # Within Germany: 19% VAT.
+    POLine("PO-2026-0204", 1, "Laboratory Magnetic Stirrer", "", "pcs", 5, 420.00, "excl_tax", 19, True),
 ]
 
 GRNS = [
@@ -147,6 +213,11 @@ GRNS = [
     GRN("GRN-5013", "PO-2026-0110", 1, 1, 1, "2026-11-02", "Stores-B"),
     GRN("GRN-5014", "PO-2026-0111", 1, 500, 500, "2026-10-28", "Stores-C"),
     GRN("GRN-5015", "PO-2026-0112", 1, 10, 10, "2026-11-05", "Stores-A"),
+    GRN("GRN-6001", "PO-2026-0201", 1, 10, 10, "2026-10-24", "Austin Receiving"),
+    GRN("GRN-6002", "PO-2026-0201", 2, 2, 2, "2026-10-24", "Austin Receiving"),
+    GRN("GRN-6003", "PO-2026-0202", 1, 2, 2, "2026-10-30", "Stores-B"),
+    GRN("GRN-6004", "PO-2026-0202", 2, 2, 2, "2026-10-30", "Stores-B"),
+    GRN("GRN-6005", "PO-2026-0204", 1, 5, 5, "2026-11-06", "Jena Wareneingang"),
 ]
 
 # History: what has already been invoiced (for duplicates and running balances).
@@ -181,7 +252,12 @@ class Repo:
 
     # --- lookups ---
     def vendor_by_gstin(self, gstin):
-        return next((v for v in self.vendors.values() if v.gstin == gstin), None)
+        return next((v for v in self.vendors.values() if gstin and v.gstin == gstin), None)
+
+    def vendor_by_tax_id(self, tax_id):
+        from .taxid import clean
+        t = clean(tax_id)
+        return next((v for v in self.vendors.values() if t and clean(v.tax_id) == t), None)
 
     def lines_of(self, po_number):
         return self.po_lines.get(po_number, [])

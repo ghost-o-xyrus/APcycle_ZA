@@ -4,6 +4,8 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const inr = (n) => n == null ? "–" : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(n);
+const money = (n, cur) => n == null ? "–" : new Intl.NumberFormat(!cur || cur === "INR" ? "en-IN" : "en-US", { style: "currency", currency: cur || "INR", maximumFractionDigits: cur === "JPY" ? 0 : 2 }).format(n);
+const money0 = (n, cur) => n == null ? "–" : new Intl.NumberFormat(!cur || cur === "INR" ? "en-IN" : "en-US", { style: "currency", currency: cur || "INR", maximumFractionDigits: 0 }).format(n);
 const inr0 = (n) => n == null ? "–" : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
 const dur = (ms) => ms == null ? "–" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 const pct = (x) => x == null ? "–" : `${Math.round(x * 100)}%`;
@@ -211,12 +213,12 @@ function renderDecision(run) {
   }
   if (fs === "on_hold") {
     html += `<div class="ask"><div class="who">Needs ${esc(d.owner)}</div><div class="q">${esc(d.question)}</div></div>`;
-    html += `<dl class="kv"><dt>Invoice total</dt><dd>${inr(run.total)}</dd>`;
-    if (d.approvable_amount != null) html += `<dt>Can be approved now</dt><dd>${inr(d.approvable_amount)} pre-tax</dd><dt>Held</dt><dd>${inr(d.held_amount)} pre-tax</dd>`;
+    html += `<dl class="kv"><dt>Invoice total</dt><dd>${money(run.total, run.currency)}</dd>`;
+    if (d.approvable_amount != null) html += `<dt>Can be approved now</dt><dd>${money(d.approvable_amount, run.currency)} pre-tax</dd><dt>Held</dt><dd>${money(d.held_amount, run.currency)} pre-tax</dd>`;
     if (d.reasons && d.reasons.length > 1) html += `<dt>Other reasons</dt><dd>${d.reasons.length - 1}</dd>`;
     html += `</dl><div class="actions">
       ${candidate ? `<button class="btn" data-act="confirm_po" data-po="${esc(candidate)}">Confirm ${esc(candidate)}</button>` : ""}
-      ${d.approvable_amount != null ? `<button class="btn" data-act="approve_part">Approve ${inr0(d.approvable_amount)} now</button>` : ""}
+      ${d.approvable_amount != null ? `<button class="btn" data-act="approve_part">Approve ${money0(d.approvable_amount, run.currency)} now</button>` : ""}
       <button class="btn quiet" data-act="approve">Approve anyway</button>
       <button class="btn danger" data-act="reject">Reject</button>
     </div><div id="reason-box"></div>`;
@@ -224,7 +226,7 @@ function renderDecision(run) {
     html += `<div class="vendor-msg">${esc(d.vendor_message)}</div>
       <div class="actions"><button class="btn quiet" id="copy-msg">Copy message for the vendor</button></div>`;
   } else if (fs === "approved" && d.approval_level) {
-    html += `<dl class="kv"><dt>Invoice total</dt><dd>${inr(run.total)}</dd><dt>Approval</dt><dd>${esc(d.approval_level)}</dd></dl>`;
+    html += `<dl class="kv"><dt>Invoice total</dt><dd>${money(run.total, run.currency)}</dd><dt>Approval</dt><dd>${esc(d.approval_level)}</dd></dl>`;
   }
   const box = $("#decision");
   box.innerHTML = html; box.hidden = false;
@@ -264,8 +266,12 @@ async function sendAction(runId, action, reason, po) {
 const FIELD_LABEL = {
   doc_type: "Document type", vendor_name: "Vendor name", vendor_gstin: "Vendor GSTIN", buyer_gstin: "Billed to GSTIN",
   invoice_number: "Invoice number", invoice_date: "Invoice date", po_reference: "PO number", subtotal: "Subtotal (pre-tax)",
-  cgst: "CGST", sgst: "SGST", igst: "IGST", total: "Total", bank_account: "Bank account", ifsc: "IFSC",
+  cgst: "CGST", sgst: "SGST", igst: "IGST", tax: "VAT or sales tax", total: "Total", currency: "Currency",
+  vendor_tax_id: "Vendor tax number", buyer_name: "Billed to", buyer_tax_id: "Billed to tax number",
+  bank_account: "Bank account or IBAN", ifsc: "Bank code (IFSC, BIC or routing)",
 };
+const GST_ONLY = new Set(["vendor_gstin", "buyer_gstin", "cgst", "sgst", "igst"]);
+const ABROAD_ONLY = new Set(["tax", "vendor_tax_id", "buyer_tax_id"]);
 let currentRun = null, currentTab = "checks";
 
 function renderDetails(run) {
@@ -306,9 +312,14 @@ function checksTable(run) {
 
 function fieldsTable(run) {
   const ex = run.extraction;
-  const rows = Object.entries(FIELD_LABEL).map(([k, label]) => {
+  const abroad = run.currency && run.currency !== "INR";
+  const rows = Object.entries(FIELD_LABEL).filter(([k]) => {
     const f = ex.fields[k] || {};
-    const v = f.value == null || f.value === "" ? '<span class="muted">not found</span>' : typeof f.value === "number" ? inr(f.value) : esc(f.value);
+    const empty = f.value == null || f.value === "";
+    return !(empty && (abroad ? GST_ONLY.has(k) : ABROAD_ONLY.has(k)));  // hide the other system's empty fields
+  }).map(([k, label]) => {
+    const f = ex.fields[k] || {};
+    const v = f.value == null || f.value === "" ? '<span class="muted">not found</span>' : typeof f.value === "number" ? money(f.value, run.currency) : esc(f.value);
     const c = f.value == null || f.value === "" ? "" : `<span class="conf"><i style="width:${Math.round((f.confidence || 0) * 100)}%"></i></span>${pct(f.confidence)}`;
     return `<tr><td>${label}</td><td>${v}</td><td>${c}</td><td class="muted">${esc(f.evidence || "")}</td></tr>`;
   }).join("");
@@ -327,9 +338,10 @@ function linesTable(run) {
     const p = price[l.description], q = qty[l.description];
     const diff = p ? `<span class="${p.diff_pct > 0.5 ? "over" : ""}">${p.diff_pct > 0 ? "+" : ""}${p.diff_pct}%</span>` : "–";
     const avail = q ? `<span class="${l.qty > q.available ? "over" : ""}">${q.available}</span> <span class="muted">of ${q.basis_qty}</span>` : "–";
-    return `<tr><td>${esc(l.description)}<div class="muted">HSN ${esc(l.hsn || "–")}</div></td><td class="num">${l.qty}</td><td class="num">${inr(l.unit_price)}</td>
-      <td class="num">${p ? inr(p.po_price_pre_tax) : "–"}${p && p.basis === "incl_tax" ? '<div class="muted">from tax-inclusive PO</div>' : ""}</td>
-      <td class="num">${diff}</td><td class="num">${avail}</td><td class="num">${inr(l.amount)}</td></tr>`;
+    const cur = run.currency;
+    return `<tr><td>${esc(l.description)}${l.hsn ? `<div class="muted">HSN ${esc(l.hsn)}</div>` : ""}</td><td class="num">${l.qty}</td><td class="num">${money(l.unit_price, cur)}</td>
+      <td class="num">${p ? money(p.po_price_pre_tax, cur) : "–"}${p && p.basis === "incl_tax" ? '<div class="muted">from tax-inclusive PO</div>' : ""}</td>
+      <td class="num">${diff}</td><td class="num">${avail}</td><td class="num">${money(l.amount, cur)}</td></tr>`;
   }).join("");
   const how = { inferred: "inferred, not printed", confirmed: "confirmed by a person", printed: "printed on the invoice" }[run.po_how] || "";
   const po = run.po_number ? `Matched to ${esc(run.po_number)} (${how}).` : "No PO matched.";
@@ -350,8 +362,8 @@ async function loadDashboard() {
   const [m, { runs }] = await Promise.all([api("/api/metrics"), api("/api/runs")]);
   const el = $("#dash");
   if (!m.processed) {
-    el.innerHTML = `<div class="dash-empty"><p>No invoices processed yet. Process one on the desk, or run all 20 samples to fill this page.</p>
-      <button class="btn" id="run-all-empty">Run all 20 samples</button></div>`;
+    el.innerHTML = `<div class="dash-empty"><p>No invoices processed yet. Process one on the desk, or run all 25 samples to fill this page.</p>
+      <button class="btn" id="run-all-empty">Run all 25 samples</button></div>`;
     $("#run-all-empty").addEventListener("click", runAll);
     return;
   }
@@ -366,7 +378,7 @@ async function loadDashboard() {
     <section class="kpis" aria-label="Headline figures">
       <div class="kpi"><div class="k">Invoices processed</div><div class="v">${m.processed}</div><div class="s">read by ${esc(routes)}</div></div>
       <div class="kpi"><div class="k">Approved with no person involved</div><div class="v">${pct(m.no_touch_rate)}</div><div class="s">${oc.APPROVE} approved by the checks</div></div>
-      <div class="kpi"><div class="k">Waiting on a person</div><div class="v">${inr0(m.amount_waiting)}</div><div class="s">${waitingN} invoice${waitingN === 1 ? "" : "s"} on hold</div></div>
+      <div class="kpi"><div class="k">Waiting on a person</div><div class="v">${inr0(m.amount_waiting)}</div><div class="s">${waitingN} invoice${waitingN === 1 ? "" : "s"} on hold${(m.currencies || []).length > 1 ? "; all currencies in rupees at demo rates" : ""}</div></div>
       <div class="kpi"><div class="k">Typical time to a decision</div><div class="v">${dur(m.median_ms)}</div><div class="s">median, from file to decision</div></div>
     </section>
     <div class="panels">
@@ -407,7 +419,7 @@ function renderRuns(runs) {
   const list = runs.filter((r) => r.state === "done" && (!f.status || r.final_status === f.status) && (!f.owner || r.owner === f.owner));
   $("#runs-table").innerHTML = `<table><thead><tr><th>When</th><th>Vendor</th><th>Invoice</th><th class="num">Total</th><th>Read by</th><th>Decision</th><th>Waiting on</th></tr></thead><tbody>
     ${list.map((r) => `<tr class="clickable" data-run="${r.run_id}" tabindex="0"><td>${new Date(r.created_at * 1000).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</td>
-      <td>${esc(r.vendor_name || "unknown")}</td><td>${esc(r.invoice_number || r.file_name)}</td><td class="num">${inr(r.total)}</td>
+      <td>${esc(r.vendor_name || "unknown")}</td><td>${esc(r.invoice_number || r.file_name)}</td><td class="num">${money(r.total, r.currency)}</td>
       <td>${esc({ text: "PDF text", ocr: "OCR", llm: "model" }[r.route] || r.route || "")}</td><td>${chip(r.final_status)}</td>
       <td>${r.final_status === "on_hold" ? esc(r.owner) : ""}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">No runs match this filter.</td></tr>'}
   </tbody></table>`;
@@ -489,6 +501,9 @@ async function findReaders(url) {
 
 /* ---------------- how it works ---------------- */
 const EDGE_CASES = [
+  ["I2", "An import into India, in euros", "A German supplier bills our Indian company in euros with no GST, which is right for an import: IGST is paid at customs. The desk checks the German VAT ID's check digit, matches the euro PO, and converts at the demo rate to apply the rupee approval limit, so 7,800 euros needs a manager."],
+  ["I3", "VAT charged where reverse charge applies", "A French supplier bills our German company for a service and adds 20% French VAT. Between EU businesses this should be reverse-charged, and VAT charged this way cannot be reclaimed. The desk holds it and asks for a reissue."],
+  ["I4", "Billed in the wrong currency", "The PO is in euros; the invoice has the same figures in dollars. A check that compares only numbers would pay it. The desk holds it for the currency."],
   ["E1", "A contract billed in parts goes over its value", "Housekeeping is billed monthly against a 12-month PO. The third bill takes it past the PO value. The desk approves only what is left on the PO and holds the excess for Procurement."],
   ["E2", "The same bill sent again with a new number", "A paid invoice is reissued 23 days later under a new number. A plain invoice-number check passes it; the desk compares amount, lines, dates and number and asks AP whether it is the same bill."],
   ["E3", "A scan with no PO number on it", "Most real invoices do not print the PO. The desk ranks the vendor's open POs by how well their lines fit and asks AP to confirm the best match with one click."],
@@ -515,7 +530,7 @@ function processMap() {
     ${stepBox(X[0], r1, 1, "Receive the file", "fingerprint, open, count pages")}
     ${stepBox(X[1], r1, 2, "Read the document", "PDF text; model for scans", true)}
     ${stepBox(X[2], r1, 3, "Is it an invoice?", "quotation, credit note, unclear")}
-    ${stepBox(X[3], r1, 4, "Check the document", "fields, GSTIN, totals, tax type")}
+    ${stepBox(X[3], r1, 4, "Check the document", "fields, tax numbers, totals, tax type")}
     ${stepBox(X[0], r2, 5, "Match the vendor", "approved? bank details unchanged?")}
     ${stepBox(X[1], r2, 6, "Match the PO", "printed or inferred; price, qty")}
     ${stepBox(X[2], r2, 7, "Duplicates and dates", "same bill twice? plausible dates?")}

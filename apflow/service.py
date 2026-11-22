@@ -23,6 +23,7 @@ SAMPLE_GROUPS = [
     ("Edge cases", ("E",)),
     ("Should be held", ("H",)),
     ("Should be rejected", ("R",)),
+    ("Other countries", ("I",)),
 ]
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 

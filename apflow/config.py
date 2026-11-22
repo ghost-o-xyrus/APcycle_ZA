@@ -26,8 +26,11 @@ class Settings:
     po_infer_min_score: float = 0.60     # below this: "no PO found"
     po_infer_min_margin: float = 0.10    # top candidate must beat the runner-up by this
 
-    # Approval tiers (pre-tax value in rupees).
+    # Approval tiers (pre-tax value in rupees; other currencies converted at the rates below).
     manager_approval_above: float = 500_000.0
+    # Fixed demo exchange rates to rupees. A live deployment would take the day's rate from Treasury.
+    fx_to_inr: dict = field(default_factory=lambda: {"INR": 1.0, "USD": 84.0, "EUR": 91.0, "GBP": 107.0,
+                                                      "JPY": 0.56})
 
     # Extraction router.
     text_layer_min_chars: int = 200

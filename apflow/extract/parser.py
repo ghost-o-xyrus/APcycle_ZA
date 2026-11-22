@@ -55,8 +55,17 @@ LABELS = {
     "igst": [r"igst"],
     "total": [r"grand\s*total", r"total\s*amount(?!\s*before)", r"amount\s*payable", r"invoice\s*total", r"balance\s*due",
               r"total\s*amount\s*due", r"amount\s*due", r"total\s*due", r"total\s*invoice(?:\s*amount)?"],
+    # Outside India
+    "vendor_tax_id": [r"(?<![a-z])(?:vat|ust)[\s\-]*(?:reg\.?\s*)?(?:id|no\.?|number|idnr\.?)\s*[:\-]?",
+                      r"(?<![a-z])EIN\s*[:\-]?", r"(?:federal\s*)?tax\s*id\s*[:\-]?"],
+    "buyer_tax_id": [r"(?:customer|buyer|bill[\s\-]*to)\s*(?:vat\s*(?:id|no\.?|number)|ein|tax\s*id)\s*[:\-]?"],
+    "buyer_name": [r"bill\s*to\s*[:\-]?", r"buyer\s*\(bill\s*to\)\s*", r"^customer\s*[:\-]?\s*(?=[A-Za-z])",
+                   r"^recipient\s*[:\-]?\s*(?=[A-Za-z])"],
+    "tax": [r"sales\s*tax", r"(?<![a-z])vat(?!\s*(?:id|no\b|no\.|reg|number))", r"(?<![a-z])tva(?![a-z])"],
     "bank_account": [r"(?:bank\s*)?a/?c\.?\s*(?:no\.?|number)\s*[:\-]?", r"account\s*(?:no\.?|number)\s*[:\-]?"],
     "ifsc": [r"ifs(?:c)?\s*code\s*[:\-]?", r"ifsc\s*[:\-]?"],
+    "iban": [r"(?<![a-z])iban\s*[:\-]?"],
+    "bic": [r"(?<![a-z])(?:bic|swift)(?:\s*code)?\s*[:\-]?", r"routing\s*(?:\(aba\))?\s*(?:no\.?|number)?\s*[:\-]?"],
 }
 TABLE_HEAD = re.compile(r"\b(hsn|qty|quantity|description|item)\b", re.I)
 # A document is known by its title, not by words used as field labels: real invoices carry
@@ -102,10 +111,14 @@ def to_float(s: str) -> float | None:
         return None
 
 
-def parse_date(s: str) -> str | None:
+def parse_date(s: str, month_first: bool = False) -> str | None:
+    """Day-first (India, Europe) unless month_first (US invoices); the other order only if the first is impossible."""
     for pat, fn in DATE_PATTERNS:
         for m in pat.finditer(s):
-            for y, mo, d in fn(m):
+            cands = fn(m)
+            if month_first and len(cands) == 2:
+                cands = cands[::-1]
+            for y, mo, d in cands:
                 try:
                     return date(y, mo, d).isoformat()
                 except ValueError:
@@ -299,8 +312,21 @@ def parse(text: str, route: str, base_conf: float = 0.95, own_gstin: str | None 
                     nums.add(vm.group(1))
     if len(nums) > 1:
         ex.notes.append(f"contains {len(nums)} different invoice numbers: {', '.join(sorted(nums)[:5])}")
+    from ..taxid import TOKEN as TAXID, country_of
+    buyer_ctx_ = re.compile(r"(buyer|customer|bill\s*to|consignee)", re.I)
+    vt, evt = _find_after(lines, LABELS["vendor_tax_id"], TAXID.pattern,
+                          skip=lambda ln, m: bool(buyer_ctx_.search(ln[max(0, m.start() - 16):m.end()])))
+    bt, evbt = _find_after(lines, LABELS["buyer_tax_id"], TAXID.pattern)
+    F["vendor_tax_id"] = Field(vt.replace(" ", "") if vt else None, base_conf if vt else 0.0, evt)
+    F["buyer_tax_id"] = Field(bt.replace(" ", "") if bt else None, base_conf if bt else 0.0, evbt)
+    bn, evbn = _find_after(lines, LABELS["buyer_name"], r"(\S.*\S)")
+    bn = re.split(r"\s{2,}|\b(?:invoice|date|po)\b", bn, flags=re.I)[0].strip() if bn else None
+    F["buyer_name"] = Field(bn or None, base_conf * 0.9 if bn else 0.0, evbn)
+    # US invoices write dates month first; a US tax number or dollar amounts say which convention applies.
+    month_first = country_of(vt) == "US" or (cur == "USD" and country_of(vt) is None)
     v, ev = _find_after(lines, LABELS["invoice_date"], r"(.+)")
-    F["invoice_date"] = Field(parse_date(v) if v else None, base_conf if v and parse_date(v) else 0.0, ev)
+    d = parse_date(v, month_first) if v else None
+    F["invoice_date"] = Field(d, base_conf if d else 0.0, ev)
     v, ev = _find_after(lines, LABELS["po_reference"], DOCNO)
     F["po_reference"] = Field(v, base_conf if v else 0.0, ev)
 
@@ -326,7 +352,7 @@ def parse(text: str, route: str, base_conf: float = 0.95, own_gstin: str | None 
     F["vendor_gstin"] = Field(vg, base_conf if vg else 0.0, evv)
     F["buyer_gstin"] = Field(bg, base_conf if bg else 0.0, evb)
 
-    for k in ("subtotal", "cgst", "sgst", "igst", "total"):
+    for k in ("subtotal", "cgst", "sgst", "igst", "tax", "total"):
         v, ev = _money_after(lines, LABELS[k])
         F[k] = Field(v, base_conf if v is not None else 0.0, ev)
 
@@ -335,6 +361,14 @@ def parse(text: str, route: str, base_conf: float = 0.95, own_gstin: str | None 
     F["bank_account"] = Field(v if v and 9 <= len(v) <= 18 else None, base_conf if v else 0.0, ev)
     v, ev = _find_after(lines, LABELS["ifsc"], r"([A-Z]{4}0[A-Z0-9]{6})")
     F["ifsc"] = Field(v, base_conf if v else 0.0, ev)
+    if not F["bank_account"].value:  # outside India: IBAN, or a US account number
+        v, ev = _find_after(lines, LABELS["iban"], r"([A-Z]{2}\d{2}(?: ?[A-Z0-9]){10,30})")
+        if not v:
+            v, ev = _find_after(lines, [r"bank\s*account\s*[:\-]?"], r"(\d{6,17})")
+        F["bank_account"] = Field(v.replace(" ", "") if v else None, base_conf if v else 0.0, ev)
+    if not F["ifsc"].value:  # BIC or ABA routing number
+        v, ev = _find_after(lines, LABELS["bic"], r"([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b|\d{9}\b)")
+        F["ifsc"] = Field(v, base_conf if v else 0.0, ev)
 
     # Line items: rows between the table header and the first totals label.
     # The header row is a hint only (OCR often mangles it); a row is accepted

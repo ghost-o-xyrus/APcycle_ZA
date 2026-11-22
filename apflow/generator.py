@@ -20,7 +20,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from PIL import Image, ImageFilter
 
-from .company import Vendor
+from .company import ENTITIES, Vendor, regime
 from .config import SETTINGS
 
 
@@ -51,6 +51,11 @@ class InvoiceSpec:
     ifsc: str | None = None
     total_override: float | None = None  # inject an arithmetic error
     seed: int = 0
+    # Outside India (layout "X"): which of our companies is billed, the currency printed,
+    # and whether the supplier prints its own tax number.
+    entity: str = "IN"
+    currency: str | None = None  # None -> the vendor's currency
+    show_vendor_tax_id: bool = True
 
 
 def money(x: float) -> float:
@@ -58,6 +63,8 @@ def money(x: float) -> float:
 
 
 def truth(spec: InvoiceSpec) -> dict:
+    if spec.layout == "X":
+        return truth_intl(spec)
     lines = []
     for l in spec.lines:
         lines.append({"description": l.description, "hsn": l.hsn, "uom": l.uom, "qty": l.qty,
@@ -85,6 +92,28 @@ def truth(spec: InvoiceSpec) -> dict:
         "bank_account": spec.bank_account or spec.vendor.bank_account,
         "ifsc": spec.ifsc or spec.vendor.ifsc,
         "lines": lines,
+        "tax": 0.0, "currency": "INR", "vendor_tax_id": None, "buyer_tax_id": None, "buyer_name": spec.buyer_name,
+        "layout": spec.layout, "scanned": spec.scanned,
+    }
+
+
+def truth_intl(spec: InvoiceSpec) -> dict:
+    ent = ENTITIES[spec.entity]
+    lines = [{"description": l.description, "hsn": l.hsn or None, "uom": l.uom, "qty": l.qty,
+              "unit_price": l.unit_price, "amount": money(l.qty * l.unit_price), "gst_rate": l.gst_rate}
+             for l in spec.lines]
+    subtotal = money(sum(l["amount"] for l in lines))
+    tax = money(sum(l["amount"] * l["gst_rate"] / 100 for l in lines))
+    total = spec.total_override if spec.total_override is not None else money(subtotal + tax)
+    return {
+        "doc_type": "invoice", "vendor_name": spec.vendor.name, "vendor_gstin": None,
+        "buyer_gstin": ent.tax_id if ent.country == "IN" else None,
+        "invoice_number": spec.invoice_number, "invoice_date": spec.invoice_date, "po_reference": spec.po_reference,
+        "subtotal": subtotal, "cgst": 0.0, "sgst": 0.0, "igst": 0.0, "total": money(total),
+        "bank_account": spec.bank_account or spec.vendor.bank_account, "ifsc": spec.ifsc or spec.vendor.ifsc,
+        "lines": lines, "tax": tax, "currency": spec.currency or spec.vendor.currency,
+        "vendor_tax_id": spec.vendor.tax_id if spec.show_vendor_tax_id else None,
+        "buyer_tax_id": None if ent.country == "IN" else ent.tax_id, "buyer_name": ent.name,
         "layout": spec.layout, "scanned": spec.scanned,
     }
 
@@ -166,7 +195,97 @@ COLS = {  # x positions (points) per column
 }
 
 
+VENDOR_ADDRESS = {"US": "8800 Westpark Dr, Houston, TX 77063, USA",
+                  "DE": "Industriestrasse 12, 68169 Mannheim, Germany",
+                  "FR": "14 Rue de la Republique, 69002 Lyon, France"}
+
+
+def render_intl(spec: InvoiceSpec, path: str) -> dict:
+    """A Western-style supplier invoice (US or EU conventions), in English."""
+    t = truth_intl(spec)
+    ent, v = ENTITIES[spec.entity], spec.vendor
+    reg = regime(v.country, ent.country)
+    cur = t["currency"]
+    sym = {"USD": "$", "EUR": "€", "GBP": "£"}.get(cur, "")
+    num = lambda x: f"{x:,.2f}"  # noqa: E731
+    y_, m_, d_ = spec.invoice_date.split("-")
+    when = f"{m_}/{d_}/{y_}" if v.country == "US" else f"{d_}.{m_}.{y_}"
+    W, H = A4
+    c = canvas.Canvas(path, pagesize=A4)
+    c.setTitle(f"Invoice {spec.invoice_number or ''}")
+    y = H - 50
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(40, y, v.name)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawRightString(W - 40, y, "INVOICE")
+    c.setFont("Helvetica", 9)
+    c.drawString(40, y - 14, VENDOR_ADDRESS.get(v.country, ""))
+    if spec.show_vendor_tax_id:
+        c.drawString(40, y - 26, f"{'EIN' if v.country == 'US' else 'VAT ID'}: {v.tax_id}")
+    y -= 56
+    hdr = []
+    if spec.invoice_number is not None:
+        hdr.append(f"Invoice No: {spec.invoice_number}")
+    hdr.append(f"Invoice Date: {when}")
+    if spec.po_reference:
+        hdr.append(f"PO Number: {spec.po_reference}")
+    for i, h in enumerate(hdr):
+        c.drawString(330, y - 12 * i, h)
+    c.drawString(40, y, f"Bill To: {ent.name}")
+    c.drawString(40, y - 12, ent.address)
+    label = {"GSTIN": "Customer GSTIN", "EIN": "Customer EIN", "VAT ID": "Customer VAT ID"}[ent.tax_label]
+    c.drawString(40, y - 24, f"{label}: {ent.tax_id}")
+    y -= 60
+    cols = [40, 330, 375, 420, 500]
+    c.setFont("Helvetica-Bold", 8.5)
+    for x, h in zip(cols, ["Description", "Qty", "Unit", "Unit Price", "Amount"]):
+        c.drawString(x, y, h)
+    c.line(40, y - 4, W - 40, y - 4)
+    c.setFont("Helvetica", 8.5)
+    y -= 18
+    for l in t["lines"]:
+        for x, cell in zip(cols, [l["description"], fmt_qty(l["qty"]), l["uom"], num(l["unit_price"]), num(l["amount"])]):
+            c.drawString(x, y, cell)
+        y -= 14
+    c.line(40, y + 6, W - 40, y + 6)
+    y -= 14
+    rates = "/".join(f"{r:g}" for r in sorted({l["gst_rate"] for l in t["lines"]}))
+    if reg == "us_sales_tax":
+        tax_label = f"Sales Tax {rates}%"
+    elif reg == "eu_reverse_charge" and not t["tax"]:
+        tax_label = "VAT 0% (reverse charge)"
+    elif reg in ("import_india", "import") and not t["tax"]:
+        tax_label = "VAT 0% (export delivery)"
+    else:
+        tax_label = f"VAT {rates}%"
+    rows = [("Subtotal", t["subtotal"]), (tax_label, t["tax"]), (f"Total Due ({cur})", t["total"])]
+    for label_, val in rows:
+        bold = label_.startswith("Total")
+        c.setFont("Helvetica-Bold" if bold else "Helvetica", 9.5 if bold else 9)
+        c.drawString(330, y, label_)
+        c.drawRightString(W - 40, y, (sym + num(val)) if bold and sym else num(val))
+        y -= 14
+    y -= 20
+    c.setFont("Helvetica", 9)
+    if v.country == "US":
+        c.drawString(40, y, f"Bank account: {t['bank_account']}")
+        c.drawString(40, y - 12, f"Routing (ABA): {t['ifsc']}")
+    else:
+        c.drawString(40, y, f"IBAN: {t['bank_account']}")
+        c.drawString(40, y - 12, f"BIC: {t['ifsc']}")
+    note = {"eu_reverse_charge": "Reverse charge: VAT to be accounted for by the recipient (Art. 196 Directive 2006/112/EC).",
+            "import_india": "Tax-free export delivery. Import duties and taxes are payable by the recipient.",
+            "import": "Tax-free export delivery. Import duties and taxes are payable by the recipient."}.get(reg)
+    if note and not t["tax"]:
+        c.drawString(40, y - 34, note)
+    c.drawString(40, y - 50, f"Payment terms: net {v.terms_days} days. Thank you for your business.")
+    c.save()
+    return t
+
+
 def render_pdf(spec: InvoiceSpec, path: str) -> dict:
+    if spec.layout == "X":
+        return render_intl(spec, path)
     t = truth(spec)
     L = LABELS[spec.layout]
     num = L["num"]

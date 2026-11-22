@@ -46,15 +46,18 @@ def create_app(service: Service | None = None) -> Flask:
     def rules():
         from ..config import SETTINGS as S
         from ..money import rs
+        from ..company import ENTITIES
         return jsonify(rules=[[k, v] for k, v in {
             "Arithmetic tolerance": f"{rs(S.money_abs_tol)} on any line, subtotal, tax or total",
             "Price tolerance": f"the larger of {rs(S.price_abs_tol_per_unit)} per unit or {S.price_rel_tol:.1%} of the PO price, after removing tax from tax-inclusive PO prices",
             "Quantity limit": "goods: accepted at goods receipt minus already billed; services: ordered minus already billed",
             "Duplicate hold": f"similarity of {S.duplicate_hold_score:.2f} or more to an invoice from the same vendor in the last {S.duplicate_window_days} days (same invoice number = reject)",
             "PO inference": f"best open PO of the vendor must score {S.po_infer_min_score:.2f} or more and beat the next by {S.po_infer_min_margin:.2f}",
-            "Manager sign-off": f"pre-tax value above {rs(S.manager_approval_above)}",
+            "Manager sign-off": f"pre-tax value above {rs(S.manager_approval_above)} (other currencies converted)",
             "Scans": f"read by the vision model first; OCR only if the model fails; a reading below {S.escalate_below_confidence:.2f} confidence goes to a person",
-            "Buyer": f"{S.company_name}, GSTIN {S.company_gstin}",
+            "Tax rules": "India: GST by state; imports into India: no GST on the invoice; US: sales tax; EU: VAT, reverse charge between EU businesses",
+            "Exchange rates (demo)": ", ".join(f"1 {c} = {rs(r)}" for c, r in S.fx_to_inr.items() if c != "INR") + "; used for the approval limit and dashboard totals",
+            "Our companies": "; ".join(f"{e.name} ({e.tax_label} {e.tax_id}, {e.currency})" for e in ENTITIES.values()),
         }.items()])
 
     @app.get("/api/readers")

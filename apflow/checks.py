@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from difflib import SequenceMatcher
 
-from .company import Repo, POLine, Vendor
+from .company import ENTITIES, EU_COUNTRIES, Entity, Repo, POLine, Vendor, regime
 from .gstin import is_valid, repair, state_code
-from .money import rs
+from .money import fmt
+from .taxid import country_of, validate as validate_tax_id
 from .schema import CheckResult, Extraction, Line
 
 CONFUSABLE = {frozenset(p) for p in [("0", "O"), ("1", "I"), ("5", "S"), ("8", "B"), ("2", "Z"), ("6", "G"), ("0", "D")]}
@@ -53,6 +54,11 @@ class Context:
     po_how: str = ""  # printed | inferred | none
     po_candidates: list = field(default_factory=list)
     sha256: str | None = None
+    entity: Entity | None = None       # which of our companies is billed
+    entity_how: str = ""
+    vendor_country: str | None = None
+    regime: str | None = None          # gst | import_india | us_sales_tax | vat_domestic | eu_reverse_charge | import
+    cur: str = "INR"                   # currency the amounts are shown in
     matches: list = field(default_factory=list)  # [(invoice Line, POLine | None, score)]
 
 
@@ -67,11 +73,17 @@ def resolve_vendor(ctx: Context) -> None:
         if len(near) == 1:
             ctx.vendor, ctx.vendor_how = near[0][1], f"GSTIN after {near[0][0]} OCR correction(s)"
             return
+    t = ctx.ex.get("vendor_tax_id")
+    if t:
+        v = ctx.repo.vendor_by_tax_id(t)
+        if v:
+            ctx.vendor, ctx.vendor_how = v, f"exact {'EIN' if v.country == 'US' else 'VAT ID'}"
+            return
     name = ctx.ex.get("vendor_name")
     if name:
         scored = sorted(((_sim(name, v.name), v) for v in ctx.repo.vendors.values()), key=lambda x: -x[0])
         if scored and scored[0][0] >= 0.85:
-            ctx.vendor, ctx.vendor_how = scored[0][1], f"name match {scored[0][0]:.2f} (GSTIN did not match)"
+            ctx.vendor, ctx.vendor_how = scored[0][1], f"name match {scored[0][0]:.2f} (tax number did not match)"
 
 
 def _match_lines(inv_lines: list[Line], po_lines: list[POLine]) -> list:
@@ -122,6 +134,39 @@ def resolve_po(ctx: Context) -> None:
         ctx.po_how = "none"
 
 
+def resolve_entity(ctx: Context) -> None:
+    """Which of our companies is billed, where the supplier is, and so which tax rules apply."""
+    ex = ctx.ex
+    ent, how = None, ""
+    if ctx.po_number and ctx.po_number in ctx.repo.pos:
+        ent, how = ENTITIES.get(ctx.repo.pos[ctx.po_number].entity), "from the PO"
+    elif ex.get("buyer_gstin"):
+        ent, how = ENTITIES["IN"], "buyer GSTIN"
+    elif ex.get("buyer_tax_id"):
+        from .taxid import clean
+        ent = next((e for e in ENTITIES.values() if clean(e.tax_id) == clean(ex.get("buyer_tax_id"))), None)
+        how = "buyer tax number" if ent else ""
+    if ent is None and ex.get("buyer_name"):
+        best = max(ENTITIES.values(), key=lambda e: _sim(ex.get("buyer_name"), e.name))
+        if _sim(ex.get("buyer_name"), best.name) >= 0.85:
+            ent, how = best, "buyer name"
+    if ent is None and not ex.get("buyer_tax_id") and not ex.get("buyer_name") and (
+            (ctx.vendor and ctx.vendor.country == "IN") or ex.get("vendor_gstin")):
+        ent, how = ENTITIES["IN"], "Indian supplier"
+    ctx.entity, ctx.entity_how = ent, how
+    vc = ctx.vendor.country if ctx.vendor else (
+        "IN" if ex.get("vendor_gstin") else country_of(ex.get("vendor_tax_id")))
+    ctx.vendor_country = vc
+    ctx.regime = regime(vc, ent.country) if (vc and ent) else None
+    po = ctx.repo.pos.get(ctx.po_number) if ctx.po_number else None
+    ctx.cur = (po.currency if po else None) or (ctx.vendor.currency if ctx.vendor else None) or \
+        ex.get("currency") or (ent.currency if ent else "INR")
+
+
+def m(ctx, x) -> str:
+    return fmt(x, ctx.cur)
+
+
 # ---------------- checks ----------------
 
 def R(id, name, status, severity, message, evidence=None, owner=None, question=None):
@@ -160,7 +205,17 @@ def c02_required(ctx):
              "AP", f"Ask the vendor for a corrected invoice showing the {', '.join(m.replace('_', ' ') for m in missing)}")
 
 
+def _gst_rules(ctx) -> bool:
+    """Indian GST rules apply: an Indian supplier billing our Indian company, or GSTINs on an unplaced invoice."""
+    if ctx.regime:
+        return ctx.regime == "gst"
+    return bool(ctx.ex.get("vendor_gstin") or ctx.ex.get("buyer_gstin")) or ctx.entity is not None and \
+        ctx.entity.country == "IN" and ctx.vendor_country in (None, "IN")
+
+
 def c03_gstin_valid(ctx):
+    if not _gst_rules(ctx):
+        return c03_tax_ids(ctx)
     bad = []
     for k in ("vendor_gstin", "buyer_gstin"):
         g = ctx.ex.get(k)
@@ -176,7 +231,43 @@ def c03_gstin_valid(ctx):
              "Check the GSTIN on the scan against the vendor master")
 
 
+def c03_tax_ids(ctx):
+    """Outside Indian GST: the supplier's EIN or VAT ID (and ours, when printed) must be well formed."""
+    ex, bad, notes = ctx.ex, [], []
+    for k, who in (("vendor_tax_id", "supplier"), ("buyer_tax_id", "our")):
+        v = ex.get(k)
+        if v and country_of(v) is None:
+            notes.append((k, v, "format not checked (scheme not supported)", ex.conf(k), who))
+        elif v:
+            ok, why = validate_tax_id(v)
+            (notes if ok else bad).append((k, v, why, ex.conf(k), who))
+    if ctx.regime == "import_india" and ex.get("buyer_gstin") and not is_valid(ex.get("buyer_gstin")):
+        bad.append(("buyer_gstin", ex.get("buyer_gstin"), "GSTIN checksum", ex.conf("buyer_gstin"), "our"))
+    if bad:
+        msg = "; ".join(f"{who} tax number '{v}' fails the {why.replace(' wrong', '')}" for _, v, why, _, who in bad)
+        if all(c >= 0.9 for *_, c, _ in bad):
+            return R("C03", "Tax numbers valid", "fail", "reject", msg, {"invalid": bad}, "Vendor")
+        return R("C03", "Tax numbers valid", "fail", "hold", msg + " (low-confidence read)", {"invalid": bad}, "AP",
+                 "Check the tax number on the scan against the vendor master")
+    if ctx.vendor_country in EU_COUNTRIES and not ex.get("vendor_tax_id"):
+        return R("C03", "Tax numbers valid", "fail", "hold", "EU invoice without the supplier's VAT ID",
+                 {"vendor_country": ctx.vendor_country}, "AP",
+                 "Ask the supplier for a corrected invoice: EU law requires their VAT ID on it")
+    if not notes:
+        return R("C03", "Tax numbers valid", "pass", "info", "No tax numbers printed; the vendor master has them")
+    def said(v, why, who):
+        kind = "EIN" if why.startswith("EIN") else "GSTIN" if why.startswith("GSTIN") else \
+            "tax number" if "not supported" in why else "VAT ID"
+        verdict = why if "not supported" in why else "well formed" if kind == "EIN" or "format" in why \
+            else "check digits valid"
+        return f"{who} {kind} {v} {verdict}"
+    return R("C03", "Tax numbers valid", "pass", "info",
+             "; ".join(said(v, why, who) for _, v, why, _, who in notes).capitalize())
+
+
 def c04_billed_to_us(ctx):
+    if not _gst_rules(ctx) and not (ctx.regime == "import_india" and ctx.ex.get("buyer_gstin")):
+        return c04_billed_abroad(ctx)
     g, ours = ctx.ex.get("buyer_gstin"), ctx.repo.settings.company_gstin
     if g == ours:
         return R("C04", "Billed to us", "pass", "info", f"Buyer GSTIN {g} is ours")
@@ -187,23 +278,59 @@ def c04_billed_to_us(ctx):
              "AP", "Confirm the buyer GSTIN on the document")
 
 
+def c04_billed_abroad(ctx):
+    from .taxid import clean
+    ex, ent = ctx.ex, ctx.entity
+    bt, bn = ex.get("buyer_tax_id"), ex.get("buyer_name")
+    ours = {clean(e.tax_id): e for e in ENTITIES.values()}
+    if ent is not None:
+        if bt and clean(bt) == clean(ent.tax_id):
+            return R("C04", "Billed to us", "pass", "info", f"Billed to {ent.name} ({ent.tax_label} {ent.tax_id})")
+        if bt and clean(bt) in ours:
+            other = ours[clean(bt)]
+            return R("C04", "Billed to us", "fail", "hold", f"Billed to {other.name}, but {ctx.po_number} was raised by "
+                     f"{ent.name}", {"billed": other.code, "po_entity": ent.code}, "AP",
+                     f"Should {other.name} or {ent.name} pay this? Ask the supplier to re-address it if needed")
+        if bt and ex.conf("buyer_tax_id") >= 0.9:
+            return R("C04", "Billed to us", "fail", "reject", f"Billed to tax number {bt}; {ent.name} is {ent.tax_id}",
+                     {"buyer_tax_id": bt}, "Vendor")
+        if bt:
+            return R("C04", "Billed to us", "fail", "hold", f"Billed-to tax number reads {bt}, not {ent.tax_id} "
+                     "(low-confidence read)", {"buyer_tax_id": bt}, "AP",
+                     f"Check the billed-to tax number on the scan; is this addressed to {ent.name}?")
+        if bn and _sim(bn, ent.name) >= 0.85:
+            return R("C04", "Billed to us", "pass", "info", f"Billed to {ent.name} (by name)")
+        return R("C04", "Billed to us", "fail", "hold", f"Cannot confirm the invoice is addressed to {ent.name}",
+                 {"buyer_name": bn, "buyer_tax_id": bt}, "AP", f"Is this invoice addressed to {ent.name}?")
+    if bt and clean(bt) not in ours and ex.conf("buyer_tax_id") >= 0.9:
+        return R("C04", "Billed to us", "fail", "reject", f"Billed to tax number {bt}, which is none of our companies",
+                 {"buyer_tax_id": bt}, "Vendor")
+    names = ", ".join(e.name for e in ENTITIES.values())
+    if bn:
+        return R("C04", "Billed to us", "fail", "hold", f"Billed to '{bn}', which is not one of our companies",
+                 {"buyer_name": bn}, "AP", "Was this sent to us by mistake? If so, reject it")
+    return R("C04", "Billed to us", "fail", "hold", "Cannot tell which of our companies this is billed to",
+             {"ours": names}, "AP", f"Which of our companies ({names}) is this invoice for?")
+
+
 def c05_arithmetic(ctx):
     tol = ctx.repo.settings.money_abs_tol
     ex, issues = ctx.ex, []
     for l in ex.lines:
         if abs(l.qty * l.unit_price - l.amount) > tol:
-            issues.append(f"'{l.description}': {l.qty:g} x {rs(l.unit_price)} != {rs(l.amount)}")
+            issues.append(f"'{l.description}': {l.qty:g} x {m(ctx, l.unit_price)} != {m(ctx, l.amount)}")
     sub, tot = ex.get("subtotal"), ex.get("total")
-    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst"))
+    tax = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst", "tax"))
     if ex.lines and sub is not None and abs(sum(l.amount for l in ex.lines) - sub) > tol:
-        issues.append(f"lines sum to {rs(sum(l.amount for l in ex.lines))}, subtotal says {rs(sub)}")
+        issues.append(f"lines sum to {m(ctx, sum(l.amount for l in ex.lines))}, subtotal says {m(ctx, sub)}")
     rated = [(l.amount, pl.gst_rate) for l, pl, _ in ctx.matches if pl is not None]
-    if rated and len(rated) == len(ex.lines):
+    zero_rated = ctx.regime in ("eu_reverse_charge", "import_india", "import")  # C06 says what is wrong there
+    if rated and len(rated) == len(ex.lines) and not zero_rated:
         exp_tax = sum(a * r / 100 for a, r in rated)
         if abs(exp_tax - tax) > tol:
-            issues.append(f"tax charged {rs(tax)}, PO GST rates give {rs(exp_tax)}")
+            issues.append(f"tax charged {m(ctx, tax)}, PO {'GST' if _gst_rules(ctx) else 'tax'} rates give {m(ctx, exp_tax)}")
     if sub is not None and tot is not None and abs(sub + tax - tot) > tol:
-        issues.append(f"subtotal {rs(sub)} + tax {rs(tax)} = {rs(sub + tax)}, total says {rs(tot)}")
+        issues.append(f"subtotal {m(ctx, sub)} + tax {m(ctx, tax)} = {m(ctx, sub + tax)}, total says {m(ctx, tot)}")
     if not issues:
         return R("C05", "Arithmetic", "pass", "info", "Lines, subtotal, tax and total reconcile")
     return R("C05", "Arithmetic", "fail", "hold", "; ".join(issues), {"issues": issues}, "AP",
@@ -219,6 +346,8 @@ def _state(code):
 
 
 def c06_tax_type(ctx):
+    if not _gst_rules(ctx):
+        return c06_tax_abroad(ctx)
     vs, bs = state_code(ctx.ex.get("vendor_gstin")), ctx.repo.settings.company_state
     c, s_, i = (ctx.ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst"))
     if not vs:
@@ -231,8 +360,45 @@ def c06_tax_type(ctx):
     if ok:
         return R("C06", "Tax type", "pass", "info", f"{exp} as expected for {_state(vs)} to {_state(bs)}")
     return R("C06", "Tax type", "fail", "hold", f"Expected {exp} for {_state(vs)} to {_state(bs)}; invoice has "
-             f"CGST {rs(c)}, SGST {rs(s_)}, IGST {rs(i)}", {"vendor_state": vs, "buyer_state": bs}, "AP",
+             f"CGST {m(ctx, c)}, SGST {m(ctx, s_)}, IGST {m(ctx, i)}", {"vendor_state": vs, "buyer_state": bs}, "AP",
              "Ask the vendor to reissue with the correct tax type (we cannot claim credit as billed)")
+
+
+def c06_tax_abroad(ctx):
+    ex, reg, ent = ctx.ex, ctx.regime, ctx.entity
+    gst = sum(ex.get(k, 0.0) or 0.0 for k in ("cgst", "sgst", "igst"))
+    tax = (ex.get("tax") or 0.0) + gst
+    po_rated = any(pl is not None and pl.gst_rate > 0 for _, pl, _ in ctx.matches)
+    where = f"{ctx.vendor_country} supplier to {ent.name}" if ent else ""
+    if reg is None:
+        return R("C06", "Tax type", "skip", "info", "Supplier country or our billed company unknown")
+    if reg == "import_india":
+        if tax == 0:
+            return R("C06", "Tax type", "pass", "info", f"Import into India ({where}): no GST on the supplier's invoice; "
+                     "IGST is paid at customs (goods) or under reverse charge (services)")
+        return R("C06", "Tax type", "fail", "hold", f"Foreign supplier charged tax ({m(ctx, tax)}) on an import into India",
+                 {"tax": tax}, "AP", "Ask the supplier to reissue without tax: IGST is paid at customs, not to them")
+    if reg == "us_sales_tax":
+        if tax > 0:
+            return R("C06", "Tax type", "pass", "info", f"US sales tax charged ({m(ctx, tax)})")
+        return R("C06", "Tax type", "pass", "info", "No sales tax charged" +
+                 ("; self-assess use tax on these items" if po_rated else ""))
+    if reg == "vat_domestic":
+        if tax > 0 or not po_rated:
+            return R("C06", "Tax type", "pass", "info", f"Domestic VAT ({where})" + (f": {m(ctx, tax)}" if tax else ""))
+        return R("C06", "Tax type", "fail", "hold", f"Domestic supply ({where}) without VAT", {"tax": 0}, "AP",
+                 "Ask the supplier why no VAT was charged, or for a corrected invoice")
+    if reg == "eu_reverse_charge":
+        if tax == 0:
+            return R("C06", "Tax type", "pass", "info", f"Cross-border EU supply ({where}): reverse charge, "
+                     "we account for the VAT")
+        return R("C06", "Tax type", "fail", "hold", f"Cross-border EU supply ({where}) should be reverse-charged, but the "
+                 f"supplier charged {m(ctx, tax)} VAT", {"tax": tax}, "AP",
+                 "Ask the supplier to reissue with reverse charge and both VAT IDs (we cannot reclaim VAT charged this way)")
+    if tax == 0:
+        return R("C06", "Tax type", "pass", "info", f"Import ({where}): no tax on the invoice; import VAT is paid at the border")
+    return R("C06", "Tax type", "fail", "hold", f"Supplier abroad charged tax ({m(ctx, tax)}) on an import", {"tax": tax},
+             "AP", "Ask the supplier to reissue without tax")
 
 
 def c07_vendor(ctx):
@@ -261,7 +427,8 @@ def c08_bank(ctx):
     if acct and acct != v.bank_account:
         diff.append(f"account {acct} vs master {v.bank_account}")
     if ifsc and ifsc != v.ifsc:
-        diff.append(f"IFSC {ifsc} vs master {v.ifsc}")
+        code = {"IN": "IFSC", "US": "routing no."}.get(v.country, "BIC")
+        diff.append(f"{code} {ifsc} vs master {v.ifsc}")
     if not diff:
         return R("C08", "Bank details", "pass", "info", "Bank details match the vendor master")
     return R("C08", "Bank details", "fail", "hold", "Bank details differ from master: " + "; ".join(diff),
@@ -319,10 +486,10 @@ def c11_price(ctx):
         return R("C11", "Price", "pass", "info", ("The line price is" if len(rows) == 1 else f"All {len(rows)} line prices are") + " within tolerance of the PO", {"lines": rows})
     b = max(bad, key=lambda r: r["impact"])
     return R("C11", "Price", "fail", "hold",
-             "; ".join(f"'{r['line']}' billed at {rs(r['invoice_price'])} vs PO {rs(r['po_price_pre_tax'])} "
-                       f"(+{r['diff_pct']}%, +{rs(r['impact'])})" for r in bad),
+             "; ".join(f"'{r['line']}' billed at {m(ctx, r['invoice_price'])} vs PO {m(ctx, r['po_price_pre_tax'])} "
+                       f"(+{r['diff_pct']}%, +{m(ctx, r['impact'])})" for r in bad),
              {"lines": rows, "over": bad}, "Procurement",
-             f"Was a price increase on '{b['line']}' agreed? If not, short-pay {rs(sum(r['impact'] for r in bad))}")
+             f"Was a price increase on '{b['line']}' agreed? If not, short-pay {m(ctx, sum(r['impact'] for r in bad))}")
 
 
 def c12_quantity(ctx):
@@ -363,13 +530,13 @@ def c13_po_balance(ctx, sub_now):
           "this_invoice": round(sub_now, 2)}
     if sub_now <= remaining + tol:
         return R("C13", "PO balance", "pass", "info",
-                 f"{rs(sub_now)} fits in the {rs(remaining)} left on {ctx.po_number}", ev)
+                 f"{m(ctx, sub_now)} fits in the {m(ctx, remaining)} left on {ctx.po_number}", ev)
     ev["approvable"] = round(max(0.0, remaining), 2)
     ev["excess"] = round(sub_now - max(0.0, remaining), 2)
     return R("C13", "PO balance", "fail", "hold",
-             f"{ctx.po_number}: {rs(before)} already billed of {rs(value)}; this invoice ({rs(sub_now)}) "
-             f"exceeds the balance by {rs(ev['excess'])}", ev, "Procurement",
-             f"Approve {rs(ev['approvable'])} now; is a PO amendment coming for the {rs(ev['excess'])} excess?")
+             f"{ctx.po_number}: {m(ctx, before)} already billed of {m(ctx, value)}; this invoice ({m(ctx, sub_now)}) "
+             f"exceeds the balance by {m(ctx, ev['excess'])}", ev, "Procurement",
+             f"Approve {m(ctx, ev['approvable'])} now; is a PO amendment coming for the {m(ctx, ev['excess'])} excess?")
 
 
 def dup_score(ex: Extraction, inv, as_of: date, window: int, recurring: bool = False) -> tuple[float, dict]:
@@ -465,10 +632,22 @@ def x01_extraction(ctx, route_issues):
 
 def c16_currency(ctx):
     cur = ctx.ex.get("currency")
-    if cur in (None, "INR"):
-        return R("C16", "Currency", "pass", "info", "Amounts in rupees")
-    return R("C16", "Currency", "fail", "hold", f"Invoice is in {cur}, not rupees", {"currency": cur},
-             "AP", f"This is a {cur} invoice: confirm the exchange rate with Treasury and any import GST before paying")
+    po = ctx.repo.pos.get(ctx.po_number) if ctx.po_number else None
+    expected, basis = ((po.currency, f"{po.po_number}") if po else
+                       (ctx.vendor.currency, f"{ctx.vendor.name}'s vendor record") if ctx.vendor else (None, ""))
+    if expected is None:
+        if cur in (None, "INR") and (ctx.entity is None or ctx.entity.country == "IN"):
+            return R("C16", "Currency", "pass", "info", "Amounts in rupees")
+        if ctx.entity is not None and cur in (None, ctx.entity.currency):
+            return R("C16", "Currency", "pass", "info", f"Amounts in {ctx.entity.currency}")
+        return R("C16", "Currency", "fail", "hold", f"Invoice is in {cur}, with no PO or vendor record to check it against",
+                 {"currency": cur}, "AP", f"Is a {cur} payment expected? Confirm the rate with Treasury before paying")
+    if cur in (None, expected):
+        return R("C16", "Currency", "pass", "info", f"Amounts in {expected}, as on {basis}" +
+                 ("" if cur else " (currency not printed)"))
+    return R("C16", "Currency", "fail", "hold", f"Invoice is in {cur} but {basis} is in {expected}",
+             {"currency": cur, "expected": expected}, "AP",
+             f"Ask the supplier to bill in {expected}, or get the PO amended and the rate confirmed by Treasury")
 
 
 def run_checks(ex: Extraction, repo: Repo, as_of: date, route_issues=(), sha256: str | None = None) -> tuple[list, Context]:
@@ -478,6 +657,7 @@ def run_checks(ex: Extraction, repo: Repo, as_of: date, route_issues=(), sha256:
         return [first], ctx
     resolve_vendor(ctx)
     resolve_po(ctx)
+    resolve_entity(ctx)
     res = [first, x01_extraction(ctx, list(route_issues)), c02_required(ctx), c03_gstin_valid(ctx),
            c04_billed_to_us(ctx), c05_arithmetic(ctx), c06_tax_type(ctx), c07_vendor(ctx), c08_bank(ctx),
            c09_po(ctx), c10_po_usable(ctx)]

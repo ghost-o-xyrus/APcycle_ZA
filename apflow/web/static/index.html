@@ -26,7 +26,7 @@
     <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><path d="M10 16l4 4 8-9" fill="none" stroke="currentColor" stroke-width="3"/></svg>
     <span>Invoice desk</span>
   </a>
-  <span class="company">Kaveri Instruments Pvt Ltd, accounts payable</span>
+  <span class="company">Kaveri Instruments (India, US, Germany), accounts payable</span>
   <nav aria-label="Main">
     <a href="#/process" data-nav="process">Process an invoice</a>
     <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
@@ -88,7 +88,7 @@
     <h1>Dashboard</h1>
     <div class="dash-actions">
       <button class="btn quiet" id="model-check">Test the reader</button>
-      <button class="btn" id="run-all">Run all 20 samples</button>
+      <button class="btn" id="run-all">Run all 25 samples</button>
       <button class="btn quiet" id="reset">Clear all runs</button>
     </div>
   </div>
@@ -133,7 +133,9 @@
   <section aria-labelledby="assume-h">
     <h2 id="assume-h">Assumptions</h2>
     <ul class="plain">
-      <li>The buyer is one Indian company paying in rupees, so tax is GST: CGST + SGST within a state, IGST across states.</li>
+      <li>The buyer is a group of three companies: Kaveri Instruments Pvt Ltd (India, rupees), Kaveri Instruments Inc. (US, dollars) and Kaveri Instruments GmbH (Germany, euros). The billed company comes from the PO, the tax number or the name on the invoice.</li>
+      <li>Tax follows where the supplier and the billed company are: GST in India (CGST + SGST within a state, IGST across states); no GST on an import into India (IGST is paid at customs); US sales tax; domestic VAT; reverse charge between EU businesses.</li>
+      <li>One approval limit for the whole group, in rupees, converting at fixed demo rates (1 USD = ₹84, 1 EUR = ₹91). A live system would take Treasury's rate for the day.</li>
       <li>Most invoices do not print a PO number (about 1 in 5 real scans did), so the PO is found by matching the vendor's open POs.</li>
       <li>Government (GeM-style) POs quote prices including tax; invoices show tax separately. Prices are compared before tax.</li>
       <li>Goods are matched three ways (PO, goods receipt, invoice); services two ways (PO, invoice).</li>
@@ -146,7 +148,7 @@
     <h2 id="limits-h">What it does not do</h2>
     <ul class="plain">
       <li>Pay vendors, post to an ERP or code invoices to ledger accounts.</li>
-      <li>Read languages other than English, or currencies other than rupees.</li>
+      <li>Read languages other than English. Tax rules cover India, the US and the EU; GSTINs, EINs and German and French VAT IDs are checked for format and check digits, but not looked up in the EU's VIES register.</li>
       <li>Sign people in: whoever acts on a hold types their name.</li>
       <li>Keep history across restarts on the free host: run the samples again after a restart.</li>
       <li>The live demo reads scans with a free cloud tier, which may keep and review requests. That is fine for synthetic invoices. For real invoices, choose a private reader (NuExtract3 or Qwen3-VL on the company's own server, started with <code>scripts/serve_reader.py</code>) under Dashboard, or use a paid tier.</li>

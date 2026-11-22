@@ -13,8 +13,8 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 368 tests, ~75 s (browser tests skip without Chrome)
-PYTHONPATH=. python scripts/run_scenarios.py -v   # 20 golden scenarios end to end
+python -m pytest                          # 406 tests, ~75 s (browser tests skip without Chrome)
+PYTHONPATH=. python scripts/run_scenarios.py -v   # 25 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```
 
@@ -23,6 +23,7 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | Path | What it does |
 | --- | --- |
 | `apflow/config.py` | Every threshold, with the reason for its value |
+| `apflow/taxid.py` | EIN format, EU VAT ID formats, German and French VAT check digits |
 | `apflow/gstin.py` | GSTIN checksum (verified on real GeM GSTINs) and OCR repair |
 | `apflow/company.py` | The invented company: vendors, POs, goods receipts, invoice history |
 | `apflow/generator.py` | Invoice PDFs in 4 layouts (D is held out) + scan simulation + ground truth |
@@ -41,6 +42,29 @@ python -m apflow.evaluate                 # extraction accuracy by route and lay
 | `scripts/serve_reader.py` | Starts a private reader on a free port, on the least busy GPU, and registers it (standard library only) |
 | `apflow/money.py` | Rupee amounts in Indian grouping (₹1,47,500.00) |
 | `apflow/web/static/` | The interface: desk (live run, stamp, decision, details) and dashboard; bundled OFL fonts |
+
+## Countries
+
+The buyer is a group: Kaveri Instruments Pvt Ltd (India, GSTIN, rupees), Kaveri Instruments Inc.
+(US, EIN, dollars) and Kaveri Instruments GmbH (Germany, VAT ID, euros). The billed company comes
+from the PO, the buyer's tax number or the buyer's name, and the tax rules follow where the
+supplier and the billed company are:
+
+| Supplier to company | Rule |
+| --- | --- |
+| India to India | GST: CGST + SGST within a state, IGST across states; GSTIN checksums |
+| Abroad to India | Import: no GST on the supplier's invoice (IGST at customs or reverse charge) |
+| US to US | Sales tax as on the PO; none charged = self-assess use tax |
+| Same EU country | Domestic VAT expected |
+| EU to another EU country | Reverse charge: no VAT on the invoice; VAT charged is held |
+| Anything else | Import: no tax on the invoice |
+
+Tax numbers: GSTIN checksum, EIN format, EU VAT format, German and French VAT check digits.
+EU invoices must carry the supplier's VAT ID. Currency must match the PO (or the vendor
+record). One approval limit in rupees for the group, at fixed demo rates (USD 84, EUR 91).
+Scenarios I1-I5 cover a US purchase, an import into India in euros (manager sign-off after
+conversion), VAT charged where reverse charge applies, a euro PO billed in dollars, and an EU
+invoice without the supplier's VAT ID. `invoice-desk-india-only.zip` is the India-only build.
 
 ## Interface
 
@@ -92,8 +116,8 @@ models were not run in the build sandbox (no internet, no GPU).
 
 ## Results (this build)
 
-- Golden scenarios: 20/20 exact (decision and the exact set of failed checks).
-- Extraction, text route, layouts A-C: 100% fields, 100% lines (24 invoices, strict scoring).
+- Golden scenarios: 25/25 exact (decision and the exact set of failed checks), 5 of them outside India.
+- Extraction, text route, layouts A-C: 100% fields, 100% lines (24 invoices, strict scoring); Western layout X: 100% fields, 100% lines (8 invoices), 93% fields from scans.
 - Held-out layout D: 37.5% header fields, 100% lines; escalated to the model 100% of the time.
 - OCR route on simulated scans: 79-86% fields; escalated 100% of the time. Without a model, scans are never auto-approved (tested).
 - Mutation tests: 10 injected engine bugs caught 10/10; 10 injected store/service/API/UI bugs caught 10/10.

@@ -16,10 +16,13 @@ from .extract.routes import extract_text_route, extract_ocr_route, needs_escalat
 
 FIELDS = ["vendor_gstin", "buyer_gstin", "invoice_number", "invoice_date", "po_reference",
           "subtotal", "cgst", "sgst", "igst", "total", "bank_account", "ifsc"]
+# Suppliers abroad (layout X): tax numbers, VAT or sales tax, and currency instead of GST fields.
+FIELDS_X = ["vendor_tax_id", "buyer_tax_id", "buyer_gstin", "invoice_number", "invoice_date", "po_reference",
+            "subtotal", "tax", "total", "currency", "bank_account", "ifsc"]
 
 
 def field_ok(name: str, truth_v, got) -> bool:
-    if name in ("subtotal", "cgst", "sgst", "igst", "total"):
+    if name in ("subtotal", "cgst", "sgst", "igst", "tax", "total"):
         t = float(truth_v or 0.0)
         g = float(got) if got is not None else 0.0
         return abs(t - g) < 0.005
@@ -38,8 +41,8 @@ def lines_ok(truth_lines, got_lines) -> tuple[int, int]:
     return hit, len(truth_lines)
 
 
-def score(truth: dict, ex) -> dict:
-    res = {f: field_ok(f, truth.get(f), ex.get(f)) for f in FIELDS}
+def score(truth: dict, ex, fields=FIELDS) -> dict:
+    res = {f: field_ok(f, truth.get(f), ex.get(f)) for f in fields}
     h, n = lines_ok(truth["lines"], ex.lines)
     res["_lines_hit"], res["_lines_n"] = h, n
     res["_escalate"] = bool(needs_escalation(ex))
@@ -50,14 +53,15 @@ def run(n_per_layout=8, scans=6, out="out/eval"):
     os.makedirs(out, exist_ok=True)
     rows = []
     seed = 1000
-    plan = [(lay, False, n_per_layout) for lay in "ABCD"] + [(lay, True, scans) for lay in "ABC"]
+    plan = [(lay, False, n_per_layout) for lay in "ABCD"] + [(lay, True, scans) for lay in "ABC"] + \
+        [("X", False, n_per_layout), ("X", True, scans)]
     for lay, scanned, n in plan:
         for _ in range(n):
             seed += 1
             spec = random_clean(seed, layout=lay, scanned=scanned)
             pdf, t = build(spec, os.path.join(out, "docs"), f"{lay}{'s' if scanned else 't'}_{seed}")
             ex = extract_ocr_route(pdf) if scanned else extract_text_route(pdf)
-            r = score(t, ex)
+            r = score(t, ex, FIELDS_X if lay == "X" else FIELDS)
             r.update(layout=lay, route="ocr" if scanned else "text", seed=seed)
             rows.append(r)
     json.dump(rows, open(os.path.join(out, "report.json"), "w"), indent=1)
@@ -70,9 +74,10 @@ def summarise(rows) -> dict:
         groups[(r["route"], r["layout"])].append(r)
     out = {}
     for k, rs in sorted(groups.items()):
-        fa = sum(r[f] for r in rs for f in FIELDS) / (len(rs) * len(FIELDS))
+        fl = FIELDS_X if k[1] == "X" else FIELDS
+        fa = sum(r[f] for r in rs for f in fl) / (len(rs) * len(fl))
         la = sum(r["_lines_hit"] for r in rs) / max(1, sum(r["_lines_n"] for r in rs))
-        per_field = {f: sum(r[f] for r in rs) / len(rs) for f in FIELDS}
+        per_field = {f: sum(r[f] for r in rs) / len(rs) for f in fl}
         esc = sum(r["_escalate"] for r in rs) / len(rs)
         out[f"{k[0]}/{k[1]}"] = {"docs": len(rs), "field_acc": round(fa, 3), "line_acc": round(la, 3),
                                  "escalated": round(esc, 3), "per_field": {f: round(v, 2) for f, v in per_field.items()}}
