@@ -398,12 +398,13 @@ def _buyer_block(c, ent, x, y):
     c.drawString(x, y, ent.name)
     c.setFont("Helvetica", 8.5)
     c.drawString(x, y - 12, ent.address)
-    c.drawString(x, y - 24, f"{ent.tax_label}: {ent.tax_id}")
+    if ent.tax_id:
+        c.drawString(x, y - 24, f"{ent.tax_label}: {ent.tax_id}")
 
 
-def render_po_pdf(po, lines, vendor, path: str) -> None:
+def render_po_pdf(po, lines, vendor, path: str, ent=None) -> None:
     """A purchase order as our company prints and sends it to the supplier."""
-    ent = ENTITIES[po.entity]
+    ent = ent or ENTITIES[po.entity]
     W, H = A4
     c = canvas.Canvas(path, pagesize=A4)
     c.setTitle(f"Purchase Order {po.po_number}")
@@ -453,10 +454,10 @@ def render_po_pdf(po, lines, vendor, path: str) -> None:
     c.save()
 
 
-def render_receipt_pdf(receipt_no, po, rows, vendor, receipt_date, received_by, path: str) -> None:
+def render_receipt_pdf(receipt_no, po, rows, vendor, receipt_date, received_by, path: str, ent=None) -> None:
     """A goods receipt: what Stores counted and accepted against each PO line.
     rows: [(po_line, received, accepted)]"""
-    ent = ENTITIES[po.entity]
+    ent = ent or ENTITIES[po.entity]
     W, H = A4
     c = canvas.Canvas(path, pagesize=A4)
     title = {"US": "RECEIVING REPORT", "DE": "GOODS RECEIPT (WARENEINGANG)"}.get(ent.country, "GOODS RECEIPT NOTE")
@@ -478,8 +479,12 @@ def render_receipt_pdf(receipt_no, po, rows, vendor, receipt_date, received_by, 
     c.line(40, y - 4, W - 40, y - 4)
     c.setFont("Helvetica", 8.5)
     y -= 18
+    from reportlab.pdfbase.pdfmetrics import stringWidth
     for pl, rec, acc in rows:
-        for x, cell in zip(cols, [str(pl.line_no), pl.description, fmt_qty(pl.qty_ordered), fmt_qty(rec), fmt_qty(acc),
+        desc = pl.description  # keep it inside its column, or it runs into the quantities
+        while stringWidth(desc, "Helvetica", 8.5) > cols[2] - cols[1] - 8 and len(desc) > 4:
+            desc = desc[:-2].rstrip() + "…" if not desc.endswith("…") else desc[:-2].rstrip() + "…"
+        for x, cell in zip(cols, [str(pl.line_no), desc, fmt_qty(pl.qty_ordered), fmt_qty(rec), fmt_qty(acc),
                                   fmt_qty(rec - acc)]):
             c.drawString(x, y, cell)
         y -= 14

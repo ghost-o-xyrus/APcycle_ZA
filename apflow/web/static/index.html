@@ -92,7 +92,7 @@
     <h1>Dashboard</h1>
     <div class="dash-actions">
       <button class="btn quiet" id="model-check">Test the reader</button>
-      <button class="btn" id="run-all">Run all 25 samples</button>
+      <button class="btn" id="run-all">Run all samples</button>
       <button class="btn quiet" id="reset">Clear all runs</button>
     </div>
   </div>
@@ -164,12 +164,23 @@
     <ol class="steps">
       <li><b>Open <a href="#/process">Process an invoice</a> and pick a sample</b> from the list on the left. Samples are grouped: clean invoices that should be approved, edge cases, international invoices, and documents that are not invoices. Items marked <i>scan</i> are images and need the reader.</li>
       <li><b>Watch the run.</b> Each of the eight steps shows what it found. The stamp on the page is the decision.</li>
-      <li><b>Read the tabs under the run.</b> <i>All checks</i> lists the 16 checks with their evidence; <i>What was read</i> shows each field and how sure the reader was; <i>Three-way match</i> sets each invoice line against its PO line and goods receipt, with links to those documents in the ERP.</li>
+      <li><b>Read the tabs under the run.</b> <i>All checks</i> lists every check (17 for an Indian invoice) with its evidence; <i>What was read</i> shows each field and how sure the reader was; <i>Three-way match</i> sets each invoice line against its PO line and goods receipt, with links to those documents in the ERP.</li>
       <li><b>Act on a hold.</b> Approve, approve part, confirm the suggested PO, or reject, with a reason. The action is recorded in the run's <i>History</i>.</li>
-      <li><b>Fill the dashboard and grade it.</b> On the <a href="#/dashboard">Dashboard</a>, press <i>Run all 25 samples</i>. Under <i>All runs</i>, press <i>Check against expected outcomes</i>: each sample shows the decision it was designed to get and whether it got it, with a count at the top. Two exceptions are allowed for: a sample run again after it was approved is a duplicate and should be rejected, and a scan read by OCR alone may be held for a person. <i>Clear all runs</i> starts again.</li>
+      <li><b>Fill the dashboard and grade it.</b> On the <a href="#/dashboard">Dashboard</a>, press <i>Run all samples</i> (30: 25 made up, 5 real). Under <i>All runs</i>, press <i>Check against expected outcomes</i>: each sample shows the decision it was designed to get and whether it got it, with a count at the top. Two exceptions are allowed for: a sample run again after it was approved is a duplicate and should be rejected, and a scan read by OCR alone may be held for a person. <i>Clear all runs</i> starts again.</li>
       <li><b>Try the cases below</b> with <i>Run this case</i>.</li>
     </ol>
     <p class="sub">To try the upload path with the same files, download a sample and drop it on <i>Upload an invoice PDF</i>: <span id="sample-downloads"></span>. The POs and goods receipts behind them are in the ERP; each record there opens its PDF.</p>
+
+    <h3 id="how-real">Real invoices</h3>
+    <p>Five samples, D1 to D5, are real documents: public records from US companies (2000 to 2020, from the tobacco litigation archive and broadcasters' FCC political files, as collected in the DocILE research dataset). Nobody here wrote them. What we made up is the buyer's side: each buyer is a <i>test company</i> in the ERP, with a purchase order and, for goods, a goods receipt, set up for one outcome.</p>
+    <table class="spec">
+      <tr><th>D1 Arista Laboratories, invoice 913</th><td>Lab tests billed to Philip Morris USA, $256,123.75. PO 8500005968 is printed on it and matches line by line. <b>Approve</b>, with manager sign-off for the amount.</td></tr>
+      <tr><th>D2 NRG Media, IN-11912105668</th><td>200 radio spots for Americas PAC at $26. The PO in the ERP was placed at $24 a spot. <b>Hold for Procurement</b>: price above the PO, by $400.</td></tr>
+      <tr><th>D3 JKS MotorSports, invoice 11590</th><td>21 lines of race-track signs for Sports Marketing Enterprise. Stores received all four Victory Lane vinyls but accepted three. <b>Hold for Stores</b>: billed for more than was accepted.</td></tr>
+      <tr><th>D4 Philip Morris purchase requisition</th><td>A real order form, not an invoice. <b>Reject.</b></td></tr>
+      <tr><th>D5 WTOV credit request</th><td>A broadcaster's billing credit form. <b>Hold for AP</b>: it goes to the credit-note process.</td></tr>
+    </table>
+    <p class="sub">Read with Gemini or <a href="#/how/models">a model on your computer</a> to have the desk read these itself. The demo stand-in returns our own transcription of each page. Download them to try the upload path: <a href="/samples/D1.pdf" download>D1</a>, <a href="/samples/D2.pdf" download>D2</a>, <a href="/samples/D3.pdf" download>D3</a>, <a href="/samples/D4.pdf" download>D4</a>, <a href="/samples/D5.pdf" download>D5</a>. The buyers, POs and receipts are under <a href="/erp/#/companies" target="_blank" rel="noopener">ERP &gt; Companies</a> and <a href="/erp/#/pos" target="_blank" rel="noopener">Purchase orders</a>, tagged <i>real invoice</i>. To test a real invoice of your own, see <a href="#/how/erp-real">part 2</a>.</p>
 
     <h3 id="map-h">The process</h3>
     <figure class="map" id="process-map"></figure>
@@ -255,6 +266,17 @@
       <li><b>Upload the invoice</b> on <a href="#/process">Process an invoice</a>: drop the PDF on <i>Upload an invoice PDF</i>. Up to 15 MB. The run reads the ERP as it is at that moment.</li>
       <li><b>If it was held because the ERP lacked something</b>, add it in the ERP and press <i>Check again</i> on the run. The desk reads the ERP afresh and decides again.</li>
     </ol>
+
+    <h3 id="how-erp-real">Testing a real invoice of your own</h3>
+    <p>A real invoice is addressed to a real buyer, not to Kaveri. AP pays invoices for the company they are addressed to, so add that buyer first, then the same steps as above:</p>
+    <ol class="steps">
+      <li><b>Add the buyer</b> under <a href="/erp/#/companies/new" target="_blank" rel="noopener">ERP &gt; Companies &gt; Add a test company</a>: the name under <i>Bill to</i> or <i>Sold to</i>, exactly as printed, its country, and its tax number if the invoice shows one.</li>
+      <li><b>Add the vendor</b>, as in step 1 above, with the name printed at the top of the invoice. Outside India, the tax number and bank details may be left blank if the invoice has none.</li>
+      <li><b>Add the PO</b> with <i>Ordered by</i> set to your test company. To see an approval, copy the invoice's lines as they are printed. To test a check, change one thing on purpose: a lower rate, a smaller quantity.</li>
+      <li><b>For goods, record a goods receipt</b>; accept fewer than billed to see the quantity check hold it.</li>
+      <li><b>Upload the invoice</b> with Gemini or your own model selected as the reader; most real invoices need one.</li>
+    </ol>
+    <p class="sub">If the invoice prints no PO number, the desk finds the PO by vendor and lines and asks AP to confirm it: press <i>Confirm</i> on the run, and the checks run again.</p>
 
     <h3>What counts as agreeing</h3>
     <table class="spec">

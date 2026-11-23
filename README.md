@@ -13,7 +13,7 @@ See DEPLOY.md to put it online (Render free web service, no card).
 ```bash
 pip install -r requirements.txt           # + tesseract-ocr and poppler-utils on the system
 python -m apflow.web.app                  # the invoice desk at http://localhost:8000
-python -m pytest                          # 444 tests, ~3 min (browser tests skip without Chrome)
+python -m pytest                          # 446 tests, ~3 min (browser tests skip without Chrome)
 PYTHONPATH=. python scripts/run_scenarios.py -v   # 25 golden scenarios end to end
 python -m apflow.evaluate                 # extraction accuracy by route and layout
 ```
@@ -157,6 +157,16 @@ on the hosted demo, where it would only search the host's own machine.
 Tested against stand-in servers that speak the vLLM/llama.cpp and Ollama APIs, including in a
 real Chrome talking to a CORS-enabled stand-in on 127.0.0.1; the real models were not run in
 the build sandbox (no internet, no GPU).
+
+## Real-invoice test pack
+
+Samples D1-D5 are real public documents (from the DocILE dataset; `apflow/erp/realpack_docs/`).
+The buyer side is made up in `apflow/erp/realpack.py`: each buyer is a *test company* in the ERP
+(the companies AP pays for are the Kaveri group plus any test companies), with a PO and, for
+goods, a goods receipt, each set for one outcome: D1 approve, D2 hold (price above PO), D3 hold
+(fewer accepted than billed), D4 reject (a requisition), D5 hold (credit request). Testers can do
+the same for their own real invoices: ERP > Companies > Add a test company, then vendor, PO,
+receipt, upload.
 
 ## Results (this build)
 

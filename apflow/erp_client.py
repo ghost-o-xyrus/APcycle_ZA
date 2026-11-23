@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .company import GRN, LEDGER, PO, POLine, Repo, Vendor
+from .company import GRN, LEDGER, PO, Entity, POLine, Repo, Vendor
 
 _DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -62,12 +62,14 @@ class ErpClient:
             try:
                 if self.mode == "api":
                     snap = {"vendors": self._get("vendor")["items"], "purchaseOrders": self._get("purchaseOrder")["items"],
-                            "itemReceipts": self._get("itemReceipt")["items"]}
+                            "itemReceipts": self._get("itemReceipt")["items"],
+                            "subsidiaries": self._get("subsidiary")["items"]}
                 else:
-                    from .erp.api import po_json, receipt_json, vendor_json
+                    from .erp.api import po_json, receipt_json, subsidiaries, vendor_json
                     snap = {"vendors": [vendor_json(v) for v in self.db.vendors() if v["source"] != "reference"],
                             "purchaseOrders": [po_json(p) for p in self.db.purchase_orders() if p["source"] != "reference"],
-                            "itemReceipts": [receipt_json(r) for r in self.db.receipts()]}
+                            "itemReceipts": [receipt_json(r) for r in self.db.receipts()],
+                            "subsidiaries": subsidiaries(self.db)}
             except ErpUnavailable as e:
                 self.last_error = str(e)
                 raise
@@ -95,6 +97,12 @@ class ErpClient:
                     qty_received=i["quantityReceived"], qty_accepted=i["quantityAccepted"], receipt_date=r["tranDate"],
                     received_by=r.get("receivedBy") or "") for r in s["itemReceipts"] for i in r["item"]["items"]]
         repo = Repo(vendors, pos, lines, grns, list(LEDGER) + list(extra_ledger))
+        for c in s.get("subsidiaries", []):  # the group's companies come from code; add the ERP's test companies
+            if c["id"] not in repo.entities:
+                repo.entities[c["id"]] = Entity(code=c["id"], name=c["name"], country=c["country"],
+                                                tax_id=c.get("taxId") or "", currency=c["currency"],
+                                                address=c.get("address") or "",
+                                                tax_label={"IN": "GSTIN", "US": "EIN"}.get(c["country"], "VAT ID"))
         repo.approved_files = dict(approved_files or {})
         repo.receipt_docs = {r["id"]: r.get("document") for r in s["itemReceipts"]}
         repo.po_docs = {p["id"]: p.get("document") for p in s["purchaseOrders"]}

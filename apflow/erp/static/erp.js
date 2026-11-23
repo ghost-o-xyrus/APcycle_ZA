@@ -5,7 +5,12 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const money = (n, cur) => n == null ? "–" : new Intl.NumberFormat(!cur || cur === "INR" ? "en-IN" : "en-US", { style: "currency", currency: cur || "INR" }).format(n);
 const qty = (n) => n == null ? "–" : (+n).toLocaleString("en-IN", { maximumFractionDigits: 3 });
 const COMPANIES = { IN: "Kaveri Instruments Pvt Ltd (India)", US: "Kaveri Instruments Inc. (US)", DE: "Kaveri Instruments GmbH (Germany)" };
-const SOURCE = { seed: "demo", tester: "tester", reference: "reference" };
+const SOURCE = { seed: "demo", tester: "tester", reference: "reference", realpack: "real invoice" };
+const COUNTRY = { IN: "India", US: "United States", DE: "Germany", FR: "France", GB: "United Kingdom" };
+// Test companies (buyers on real invoices) are added in the ERP; fetch their names once per page view.
+async function loadCompanies() {
+  try { (await api("/erp/ui/companies")).forEach((c) => { if (!(c.id in COMPANIES) || c.source !== "seed") COMPANIES[c.id] = c.source === "seed" ? COMPANIES[c.id] : `${c.name} (test company)`; }); } catch (e) { /* names fall back to codes */ }
+}
 
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
@@ -28,6 +33,7 @@ async function route() {
   document.querySelectorAll(".bar nav a").forEach((a) => a.classList.toggle("on", a.dataset.nav === (parts[0] || "")));
   const main = $("#main");
   try {
+    await loadCompanies();
     if (!parts.length) await overview(main);
     else if (parts[0] === "pos" && parts[1] === "new") await newPO(main);
     else if (parts[0] === "pos" && parts[1]) await poDetail(main, decodeURIComponent(parts[1]));
@@ -36,6 +42,8 @@ async function route() {
     else if (parts[0] === "receipts") await receiptList(main);
     else if (parts[0] === "vendors" && parts[1] === "new") await newVendor(main);
     else if (parts[0] === "vendors") await vendorList(main);
+    else if (parts[0] === "companies" && parts[1] === "new") await newCompany(main);
+    else if (parts[0] === "companies") await companyList(main);
     else if (parts[0] === "integration") await integration(main);
     else main.innerHTML = '<h1>Not found</h1><p><a href="#/">Back to the overview</a></p>';
   } catch (e) {
@@ -159,7 +167,7 @@ async function newPO(main) {
       <div class="grid">
         <label class="f">PO number<input name="po_number" placeholder="Blank: numbered automatically"></label>
         <label class="f">PO date<input name="po_date" type="date" required></label>
-        <label class="f">Ordered by<select name="entity">${Object.entries(COMPANIES).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></label>
+        <label class="f">Ordered by<select name="entity">${Object.entries(COMPANIES).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select><span class="hint">Testing a real invoice? <a href="#/companies/new">Add its buyer</a> first.</span></label>
         <label class="f">Currency<select name="currency">${["INR", "USD", "EUR", "GBP"].map((c) => `<option>${c}</option>`).join("")}</select></label>
         <label class="f">Kind<select name="kind"><option value="goods">Goods (needs a goods receipt)</option><option value="services">Services (no goods receipt)</option></select></label>
         <label class="f">Prices on the PO are<select name="price_basis"><option value="excl_tax">Excluding tax</option><option value="incl_tax">Including tax</option></select></label>
@@ -332,6 +340,36 @@ async function newVendor(main) {
         currency: { IN: "INR", US: "USD", GB: "GBP" }[country] || "EUR", bank_account: f.bank_account.value, bank_code: f.bank_code.value, terms_days: f.terms_days.value });
       location.hash = "#/vendors";
     } catch (err) { $("#v-msg").className = "msg err"; $("#v-msg").textContent = err.message; }
+  });
+}
+
+/* ---------------- companies ---------------- */
+async function companyList(main) {
+  const cs = await api("/erp/ui/companies");
+  main.innerHTML = `<div class="row spread"><div><h1>Companies</h1><p class="lead">The companies AP pays invoices for. The three Kaveri companies are the demo client. A <b>test company</b> is the buyer printed on a real invoice you want to test: real invoices are billed to real buyers, so add that buyer here, then raise its PO. ${HELP("erp-real", "Testing a real invoice")}</p></div>
+    <a class="btn primary" href="#/companies/new">Add a test company</a></div>
+    <div class="panel wide"><table><thead><tr><th>Code</th><th>Name</th><th>Country</th><th>Tax number</th><th>Currency</th><th>Address</th><th>Source</th></tr></thead><tbody>
+    ${cs.map((c) => `<tr><td>${esc(c.id)}</td><td>${esc(c.name)}</td><td>${esc(COUNTRY[c.country] || c.country)}</td><td>${esc(c.taxId || "")}</td><td>${esc(c.currency)}</td><td>${esc(c.address)}</td><td>${tag(c.source)}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+async function newCompany(main) {
+  main.innerHTML = `<p><a href="#/companies">← Companies</a></p><h1>Add a test company</h1>
+    <p class="lead">Copy the name under <i>Bill to</i> or <i>Sold to</i> on the real invoice, exactly as printed. The desk checks that each invoice is addressed to the company on its PO. ${HELP("erp-real", "Testing a real invoice")}</p>
+    <form class="panel" id="c-form" novalidate><div class="grid">
+      <label class="f">Name, as on the invoice<input name="name" required></label>
+      <label class="f">Country<select name="country">${Object.entries(COUNTRY).map(([k, v]) => `<option value="${k}" ${k === "US" ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+      <label class="f">Tax number, if the invoice prints one (GSTIN, EIN or VAT ID)<input name="tax_id"></label>
+      <label class="f">Address (optional)<input name="address"></label>
+    </div><div class="row" style="margin-top:16px"><button class="btn primary">Save company</button><a class="btn" href="#/companies">Cancel</a></div>
+    <p class="msg" id="c-msg" role="alert"></p></form>`;
+  $("#c-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await post("/erp/ui/companies", { name: f.name.value, country: f.country.value, tax_id: f.tax_id.value, address: f.address.value });
+      location.hash = "#/companies";
+    } catch (err) { $("#c-msg").className = "msg err"; $("#c-msg").textContent = err.message; }
   });
 }
 

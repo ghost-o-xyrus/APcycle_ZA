@@ -58,6 +58,15 @@ def make_ui(svc) -> Blueprint:
                                     "token_hint": f"{tok[:4]}…{tok[-4:]}", "desk_mode": s["mode"],
                                     "desk_url": s["url"], "desk_last_sync": s["last_sync"], "desk_calls": s["calls"]})
 
+    @bp.get("/ui/companies")
+    def companies():
+        from .api import subsidiaries
+        return jsonify(subsidiaries(db))
+
+    @bp.post("/ui/companies")
+    def new_company():
+        return jsonify(db.create_company(request.get_json(silent=True) or {})), 201
+
     @bp.get("/ui/vendors")
     def vendors():
         return jsonify(db.vendors())
@@ -95,7 +104,7 @@ def make_ui(svc) -> Blueprint:
     @bp.post("/ui/read/po")
     def read_po_doc():
         doc_id, path = _pdf_upload("po")
-        return jsonify(doc_id=doc_id, draft=read_po(path, db.vendors(), svc.real_model))
+        return jsonify(doc_id=doc_id, draft=read_po(path, db.vendors(), svc.real_model, db.companies()))
 
     @bp.post("/ui/pos")
     def new_po():

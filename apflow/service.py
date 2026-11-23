@@ -24,6 +24,7 @@ SAMPLE_GROUPS = [
     ("Should be held", ("H",)),
     ("Should be rejected", ("R",)),
     ("Other countries", ("I",)),
+    ("Real invoices (public records)", ("D",)),
 ]
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 
@@ -125,10 +126,17 @@ class Service:
             out[s.id] = {"id": s.id, "title": s.title, "group": group, "scanned": s.spec.scanned,
                          "file": pdf, "sha256": sha256_of(pdf), "truth": truth,
                          "vendor": s.spec.vendor.name, "expect": s.expect}
+        from .erp.realpack import DOCS, REAL_SAMPLES
+        for sid, fname, title, vendor, expect, truth in REAL_SAMPLES:
+            pdf = os.path.join(DOCS, fname)
+            if os.path.exists(pdf):
+                out[sid] = {"id": sid, "title": title, "group": "Real invoices (public records)", "scanned": False,
+                            "file": pdf, "sha256": sha256_of(pdf), "truth": truth, "vendor": vendor, "expect": expect,
+                            "real": True}
         return out
 
     def samples(self) -> list[dict]:
-        return [{k: v for k, v in s.items() if k in ("id", "title", "group", "scanned", "vendor", "expect")}
+        return [{k: v for k, v in s.items() if k in ("id", "title", "group", "scanned", "vendor", "expect", "real")}
                 for s in self._samples.values()]
 
     # ---------- runs ----------

@@ -5,8 +5,13 @@ buying and Stores enter POs and goods receipts here; the invoice desk only reads
 the API in api.py, with a token. It has its own database file and its own document store.
 
 Records carry a `source`: "seed" (the demo company's own history, with generated documents),
-"tester" (added through the ERP screens), or "reference" (real public documents kept for
-comparison, such as a GeM contract placed by another buyer).
+"tester" (added through the ERP screens), "realpack" (made-up buyer records that match real public
+invoices, so those invoices can be tested end to end), or "reference" (real public documents kept
+for comparison, such as a GeM contract placed by another buyer).
+
+Besides the Kaveri group's three companies, the ERP can hold *test companies*: the buyer printed
+on a real invoice. An AP product serves the client company the invoice is addressed to; a real
+invoice is addressed to a real buyer, so testing one means adding that buyer here.
 """
 from __future__ import annotations
 
@@ -46,6 +51,10 @@ CREATE TABLE IF NOT EXISTS receipt_lines (
 CREATE TABLE IF NOT EXISTS documents (
   doc_id TEXT PRIMARY KEY, kind TEXT, file_name TEXT, path TEXT, sha256 TEXT, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS companies (
+  code TEXT PRIMARY KEY, name TEXT NOT NULL, country TEXT NOT NULL, tax_id TEXT DEFAULT '', currency TEXT NOT NULL,
+  address TEXT DEFAULT '', source TEXT DEFAULT 'tester', created_at REAL
+);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL, actor TEXT, action TEXT, record TEXT, detail TEXT
 );
@@ -71,6 +80,9 @@ class ErpDB:
         self.changed_at = time.time()
         if seed and not self._q("SELECT 1 FROM purchase_orders LIMIT 1"):
             self.seed()
+        if seed and not self._q("SELECT 1 FROM companies WHERE source='realpack' LIMIT 1"):
+            from .realpack import seed_realpack
+            seed_realpack(self)
 
     # ---------- low level ----------
     def _q(self, sql, args=()):
@@ -144,6 +156,13 @@ class ErpDB:
                        "GROUP BY line_no", (po_number,))
         return {r["line_no"]: {"received": r["r"] or 0.0, "accepted": r["a"] or 0.0} for r in rows}
 
+    def companies(self):
+        return self._q("SELECT * FROM companies ORDER BY code")
+
+    def company(self, code):
+        r = self._q("SELECT * FROM companies WHERE code=?", (code,))
+        return r[0] if r else None
+
     def audit(self, limit=50):
         return self._q("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
 
@@ -159,8 +178,38 @@ class ErpDB:
         if kind == "po":
             n = self._q("SELECT COUNT(*) n FROM purchase_orders WHERE source='tester'")[0]["n"] + 1
             return f"PO-2026-9{n:03d}"
+        if kind == "company":
+            n = self._q("SELECT COUNT(*) n FROM companies")[0]["n"] + 1
+            while self.company(f"T{n:02d}"):
+                n += 1
+            return f"T{n:02d}"
         n = self._q("SELECT COUNT(*) n FROM receipts WHERE source='tester'")[0]["n"] + 1
         return f"GRN-9{n:03d}"
+
+    def create_company(self, c: dict, actor="tester", source="tester") -> dict:
+        """A test company: the buyer on a real invoice you want to test (see the module notes)."""
+        from ..gstin import is_valid
+        from ..taxid import validate
+        name = (c.get("name") or "").strip()
+        country = (c.get("country") or "").upper()
+        if not name:
+            raise ErpError("A company needs its name, as printed under Bill to on the invoice")
+        if country not in ("IN", "US", "DE", "FR", "GB"):
+            raise ErpError("Country must be India, United States, Germany, France or United Kingdom")
+        tax_id = (c.get("tax_id") or "").strip().upper()
+        if tax_id and country == "IN" and not is_valid(tax_id):
+            raise ErpError("An Indian company's tax number is its GSTIN (15 characters, correct check digit)")
+        if tax_id and country != "IN" and not validate(tax_id)[0]:
+            raise ErpError(f"Tax number {tax_id} is not valid: {validate(tax_id)[1]}")
+        code = (c.get("code") or "").strip().upper() or self.next_id("company")
+        if self.company(code) or code in ("IN", "US", "DE"):
+            raise ErpError(f"Company {code} already exists")
+        cur = (c.get("currency") or {"IN": "INR", "US": "USD", "GB": "GBP"}.get(country, "EUR")).upper()
+        self._x("INSERT INTO companies (code, name, country, tax_id, currency, address, source, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)", (code, name, country, tax_id, cur, (c.get("address") or "").strip(),
+                                             source, time.time()))
+        self._commit(actor, "create test company", code, {"name": name})
+        return self.company(code)
 
     def create_vendor(self, v: dict, actor="tester", source="tester") -> dict:
         from ..gstin import is_valid
@@ -198,7 +247,7 @@ class ErpDB:
         if self._q("SELECT 1 FROM purchase_orders WHERE po_number=?", (num,)):
             raise ErpError(f"PO {num} already exists")
         ent = p.get("entity") or "IN"
-        if ent not in ENTITIES and not p.get("external_buyer"):
+        if ent not in ENTITIES and not self.company(ent) and not p.get("external_buyer"):
             raise ErpError(f"Unknown company {ent}")
         lines = p.get("lines") or []
         if not lines:
@@ -277,6 +326,7 @@ class ErpDB:
             self._conn.execute("DELETE FROM po_lines WHERE po_number IN (SELECT po_number FROM purchase_orders WHERE source='tester')")
             self._conn.execute("DELETE FROM purchase_orders WHERE source='tester'")
             self._conn.execute("DELETE FROM vendors WHERE source='tester'")
+            self._conn.execute("DELETE FROM companies WHERE source='tester'")
         self._commit("system", "remove tester records", "*")
 
     # ---------- seed ----------

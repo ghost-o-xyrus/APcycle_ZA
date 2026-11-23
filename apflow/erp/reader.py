@@ -81,10 +81,13 @@ def _match_vendor(vendors, name, gstin, tax_id):
     return None
 
 
-def _entity_from(text):
+def _entity_from(text, companies=()):
     for e in ENTITIES.values():
         if clean(e.tax_id) in clean(text) or e.name.lower() in text.lower():
             return e.code
+    for c in companies:  # test companies: the buyers on real invoices
+        if c["name"].lower() in text.lower() or (c.get("tax_id") and clean(c["tax_id"]) in clean(text)):
+            return c["code"]
     return None
 
 
@@ -94,7 +97,7 @@ PO_ROW = re.compile(r"^\s*(\d{1,3})\s+(.+?)\s+(?:(\d{4,8})\s+)?([\d,]+(?:\.\d+)?
                     r"([\d,]+\.\d{2})\s+([\d,]+\.\d{2})(?:\s+(\d{1,2}(?:\.\d+)?)\s*%)?\s*$")
 
 
-def read_po(pdf_path: str, vendors: list, llm=None) -> dict:
+def read_po(pdf_path: str, vendors: list, llm=None, companies=()) -> dict:
     d = _from_model(llm, pdf_path, PO_PROMPT)
     if d:
         how = f"vision model ({getattr(llm, 'name', 'model')})"
@@ -135,9 +138,10 @@ def read_po(pdf_path: str, vendors: list, llm=None) -> dict:
         vg = gst[0] if gst else None
         tids = [t.replace(" ", "") for t in TAXID.findall(text) if clean(t) not in OURS and country_of(t) != "IN"]
         vt = tids[0] if tids else None
-    draft["entity"] = _entity_from(text) or "IN"
+    draft["entity"] = _entity_from(text, companies) or "IN"
     if not draft.get("currency"):
-        draft["currency"] = ENTITIES[draft["entity"]].currency
+        draft["currency"] = ENTITIES[draft["entity"]].currency if draft["entity"] in ENTITIES else \
+            next((c["currency"] for c in companies if c["code"] == draft["entity"]), "INR")
     draft["vendor"] = {"match": _match_vendor(vendors, name, vg, vt), "name": name, "gstin": vg, "tax_id": vt,
                        "country": "IN" if vg else (country_of(vt) or None)}
     draft["read_by"] = how

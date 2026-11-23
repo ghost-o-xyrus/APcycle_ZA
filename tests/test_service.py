@@ -236,3 +236,17 @@ def test_cannot_approve_anyway_when_the_vendor_is_not_in_the_master(svc, monkeyp
     assert h["final_status"] == "on_hold"
     with pytest.raises(ActionError, match="not in the vendor master"):
         svc.act(h["run_id"], "approve", "Looks fine to me")
+
+
+def test_real_public_invoices_reach_their_designed_outcomes(tmp_path):
+    """D1-D5 are real documents; their buyers, POs and receipts are the ERP's real-invoice test pack."""
+    from datetime import date
+    svc = Service(str(tmp_path / "real"), as_of=date(2026, 11, 23), model_mode="standin")
+    got = {}
+    for sid in ("D1", "D2", "D3", "D4", "D5"):
+        r = svc.wait(svc.start_sample(sid))
+        got[sid] = (r["outcome"], r.get("owner"))
+        assert r["outcome"] == svc._samples[sid]["expect"], (sid, r.get("summary"))
+    assert got["D2"][1] == "Procurement" and got["D3"][1] == "Stores" and got["D5"][1] == "AP"
+    d3 = svc.wait(svc.start_sample("D3"))  # the same file again: a duplicate only if the first was approved
+    assert d3["outcome"] == "HOLD"

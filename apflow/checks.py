@@ -24,6 +24,10 @@ def _sim(a: str, b: str) -> float:
     return SequenceMatcher(None, " ".join(norm(a)), " ".join(norm(b))).ratio()
 
 
+def _norm_name(s: str | None) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
+
+
 def _norm_no(s: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
@@ -138,16 +142,18 @@ def resolve_entity(ctx: Context) -> None:
     """Which of our companies is billed, where the supplier is, and so which tax rules apply."""
     ex = ctx.ex
     ent, how = None, ""
+    ENT = getattr(ctx.repo, "entities", ENTITIES)
     if ctx.po_number and ctx.po_number in ctx.repo.pos:
-        ent, how = ENTITIES.get(ctx.repo.pos[ctx.po_number].entity), "from the PO"
+        ent, how = ENT.get(ctx.repo.pos[ctx.po_number].entity), "from the PO"
     elif ex.get("buyer_gstin"):
-        ent, how = ENTITIES["IN"], "buyer GSTIN"
+        ent = next((e for e in ENT.values() if e.country == "IN" and e.tax_id == ex.get("buyer_gstin")), ENTITIES["IN"])
+        how = "buyer GSTIN"
     elif ex.get("buyer_tax_id"):
         from .taxid import clean
-        ent = next((e for e in ENTITIES.values() if clean(e.tax_id) == clean(ex.get("buyer_tax_id"))), None)
+        ent = next((e for e in ENT.values() if clean(e.tax_id) == clean(ex.get("buyer_tax_id"))), None)
         how = "buyer tax number" if ent else ""
     if ent is None and ex.get("buyer_name"):
-        best = max(ENTITIES.values(), key=lambda e: _sim(ex.get("buyer_name"), e.name))
+        best = max(ENT.values(), key=lambda e: _sim(ex.get("buyer_name"), e.name))
         if _sim(ex.get("buyer_name"), best.name) >= 0.85:
             ent, how = best, "buyer name"
     if ent is None and not ex.get("buyer_tax_id") and not ex.get("buyer_name") and (
@@ -270,7 +276,9 @@ def c03_tax_ids(ctx):
 def c04_billed_to_us(ctx):
     if not _gst_rules(ctx) and not (ctx.regime == "import_india" and ctx.ex.get("buyer_gstin")):
         return c04_billed_abroad(ctx)
-    g, ours = ctx.ex.get("buyer_gstin"), ctx.repo.settings.company_gstin
+    g = ctx.ex.get("buyer_gstin")
+    ours = ctx.entity.tax_id if ctx.entity is not None and ctx.entity.country == "IN" and ctx.entity.tax_id \
+        else ctx.repo.settings.company_gstin
     if g == ours:
         return R("C04", "Billed to us", "pass", "info", f"Buyer GSTIN {g} is ours")
     if g and ctx.ex.conf("buyer_gstin") >= 0.9:
@@ -284,7 +292,8 @@ def c04_billed_abroad(ctx):
     from .taxid import clean
     ex, ent = ctx.ex, ctx.entity
     bt, bn = ex.get("buyer_tax_id"), ex.get("buyer_name")
-    ours = {clean(e.tax_id): e for e in ENTITIES.values()}
+    ENT = getattr(ctx.repo, "entities", ENTITIES)
+    ours = {clean(e.tax_id): e for e in ENT.values() if e.tax_id}
     if ent is not None:
         if bt and clean(bt) == clean(ent.tax_id):
             return R("C04", "Billed to us", "pass", "info", f"Billed to {ent.name} ({ent.tax_label} {ent.tax_id})")
@@ -300,14 +309,14 @@ def c04_billed_abroad(ctx):
             return R("C04", "Billed to us", "fail", "hold", f"Billed-to tax number reads {bt}, not {ent.tax_id} "
                      "(low-confidence read)", {"buyer_tax_id": bt}, "AP",
                      f"Check the billed-to tax number on the scan; is this addressed to {ent.name}?")
-        if bn and _sim(bn, ent.name) >= 0.85:
+        if bn and (_sim(bn, ent.name) >= 0.85 or _norm_name(ent.name) in _norm_name(bn)):
             return R("C04", "Billed to us", "pass", "info", f"Billed to {ent.name} (by name)")
         return R("C04", "Billed to us", "fail", "hold", f"Cannot confirm the invoice is addressed to {ent.name}",
                  {"buyer_name": bn, "buyer_tax_id": bt}, "AP", f"Is this invoice addressed to {ent.name}?")
     if bt and clean(bt) not in ours and ex.conf("buyer_tax_id") >= 0.9:
         return R("C04", "Billed to us", "fail", "reject", f"Billed to tax number {bt}, which is none of our companies",
                  {"buyer_tax_id": bt}, "Vendor")
-    names = ", ".join(e.name for e in ENTITIES.values())
+    names = ", ".join(e.name for e in ENTITIES.values())  # the group's own; test companies are named on their POs
     if bn:
         return R("C04", "Billed to us", "fail", "hold", f"Billed to '{bn}', which is not one of our companies",
                  {"buyer_name": bn}, "AP", "Was this sent to us by mistake? If so, reject it")

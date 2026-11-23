@@ -89,3 +89,4 @@ pre { padding: 10px 12px; overflow-x: auto; }
   .wide { overflow-x: auto; }
 }
 a.help { white-space: nowrap; font-weight: 600; }
+.hint { font-size: 12px; color: var(--ink-2); }

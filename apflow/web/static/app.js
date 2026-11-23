@@ -58,12 +58,13 @@ window.addEventListener("hashchange", route);
 async function loadSamples() {
   const { samples } = await api("/api/samples");
   state.samples = samples;
+  document.querySelectorAll("#run-all, #run-all-empty").forEach((b) => b.textContent = `Run all ${samples.length} samples`);
   const groups = [...new Set(samples.map((s) => s.group))];
   $("#samples").innerHTML = groups.map((g) => `
     <div class="group"><h3>${esc(g)}</h3>
       ${samples.filter((s) => s.group === g).map((s) => `
         <button class="sample" data-sample="${s.id}">
-          <span class="t">${esc(s.title)}${s.scanned ? '<span class="tag">scan</span>' : ""}</span>
+          <span class="t">${esc(s.title)}${s.scanned ? '<span class="tag">scan</span>' : ""}${s.real ? '<span class="tag">real</span>' : ""}</span>
           <span class="v">${esc(s.vendor)}</span>
         </button>`).join("")}
     </div>`).join("");
@@ -379,8 +380,8 @@ async function loadDashboard() {
   const [m, { runs }] = await Promise.all([api("/api/metrics"), api("/api/runs")]);
   const el = $("#dash");
   if (!m.processed) {
-    el.innerHTML = `<div class="dash-empty"><p>No invoices processed yet. Process one on the desk, or run all 25 samples to fill this page.</p>
-      <button class="btn" id="run-all-empty">Run all 25 samples</button></div>`;
+    el.innerHTML = `<div class="dash-empty"><p>No invoices processed yet. Process one on the desk, or run all ${state.samples.length} samples to fill this page.</p>
+      <button class="btn" id="run-all-empty">Run all ${state.samples.length} samples</button></div>`;
     $("#run-all-empty").addEventListener("click", runAll);
     return;
   }

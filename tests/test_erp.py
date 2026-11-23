@@ -39,7 +39,9 @@ def client(svc):
 
 def test_seed_holds_the_demo_company_with_documents(tmp_path):
     db = ErpDB(str(tmp_path / "erp"))
-    assert db.counts() == {"vendors": 12, "purchase_orders": 17, "receipts": 20}
+    # demo company 11 vendors, 16 POs, 20 receipts; GeM reference 1 + 1; real-invoice pack 3 vendors, 3 POs, 1 receipt
+    assert db.counts() == {"vendors": 15, "purchase_orders": 20, "receipts": 21}
+    assert [c["code"] for c in db.companies()] == ["T01", "T02", "T03"]
     for p in db.purchase_orders():
         assert p["doc_id"] and os.path.exists(db.document(p["doc_id"])["path"]), p["po_number"]
     assert all(r["doc_id"] for r in db.receipts())
@@ -48,12 +50,18 @@ def test_seed_holds_the_demo_company_with_documents(tmp_path):
 
 
 def test_desk_sees_exactly_the_old_company_data_through_the_erp(tmp_path):
+    from apflow.erp.realpack import POS as RP_POS, RECEIPTS as RP_REC, VENDORS as RP_V
     r, base = ErpClient(ErpDB(str(tmp_path / "erp"))).repo(), Repo()
     key = lambda x: repr(x).replace(".0,", ",").replace(".0)", ")")  # noqa: E731  200 == 200.0
-    assert sorted(map(key, r.vendors.values())) == sorted(map(key, base.vendors.values()))
-    assert sorted(map(key, r.grns)) == sorted(map(key, base.grns))
-    assert sorted(map(key, [l for ls in r.po_lines.values() for l in ls])) == \
+    rp_pos, rp_v = {p["po_number"] for p in RP_POS}, {v["vendor_id"] for v in RP_V}
+    assert sorted(map(key, [v for v in r.vendors.values() if v.vendor_id not in rp_v])) == \
+        sorted(map(key, base.vendors.values()))
+    assert sorted(map(key, [g for g in r.grns if g.po_number not in rp_pos])) == sorted(map(key, base.grns))
+    assert sorted(map(key, [l for ls in r.po_lines.values() for l in ls if l.po_number not in rp_pos])) == \
         sorted(map(key, [l for ls in base.po_lines.values() for l in ls]))
+    assert set(r.entities) == {"IN", "US", "DE", "T01", "T02", "T03"}  # the group, plus the real buyers as test companies
+    assert r.entities["T02"].name == "Americas PAC" and r.entities["T02"].currency == "USD"
+    assert {g.grn_number for g in r.grns if g.po_number in rp_pos} == {x["receipt_no"] for x in RP_REC}
     assert "GEMC-511687772029047" not in r.pos  # another buyer's order never reaches the checks
 
 
@@ -95,8 +103,9 @@ def test_api_needs_the_token(client):
     assert client.get("/erp/api/record/v1/purchaseOrder").status_code == 401
     assert client.get("/erp/api/record/v1/purchaseOrder", headers={"Authorization": "Bearer wrong"}).status_code == 401
     r = client.get("/erp/api/record/v1/purchaseOrder", headers=client.token).get_json()
-    assert r["count"] == 16 and r["items"][0]["item"]["items"][0]["quantity"] == 200
-    assert client.get("/erp/api/record/v1/purchaseOrder?includeReference=true", headers=client.token).get_json()["count"] == 17
+    first = next(i for i in r["items"] if i["id"] == "PO-2026-0101")
+    assert r["count"] == 19 and first["item"]["items"][0]["quantity"] == 200  # 16 demo + 3 real-invoice pack
+    assert client.get("/erp/api/record/v1/purchaseOrder?includeReference=true", headers=client.token).get_json()["count"] == 20
     assert client.get("/erp/api/record/v1/purchaseOrder/NOPE", headers=client.token).status_code == 404
 
 
@@ -124,7 +133,7 @@ def test_every_demo_po_and_receipt_reads_back_exactly(tmp_path):
     for p in db.purchase_orders():
         if p["source"] == "reference":
             continue
-        d = read_po(db.document(p["doc_id"])["path"], db.vendors())
+        d = read_po(db.document(p["doc_id"])["path"], db.vendors(), companies=db.companies())
         assert d["po_number"] == p["po_number"] and d["po_date"] == p["po_date"], p["po_number"]
         assert d["vendor"]["match"] == p["vendor_id"] and d["entity"] == p["entity"] and d["currency"] == p["currency"]
         assert d["kind"] == p["kind"] and (d["price_basis"] == "incl_tax") == any(l["price_basis"] == "incl_tax" for l in p["lines"])
@@ -152,7 +161,7 @@ def test_desk_over_http_with_token_matches_local(svc):
     try:
         url = f"http://127.0.0.1:{srv.server_port}"
         over_http = ErpClient(None, url, api_token(svc.erp_db))
-        assert over_http.snapshot() == ErpClient(svc.erp_db).snapshot() and over_http.calls == 3
+        assert over_http.snapshot() == ErpClient(svc.erp_db).snapshot() and over_http.calls == 4
         with pytest.raises(ErpUnavailable, match="401"):
             ErpClient(None, url, "wrong").snapshot()
         svc.erp = over_http  # the desk now reads only through the API
@@ -232,9 +241,9 @@ def test_invoice_before_its_po_is_held_then_passes_once_the_erp_has_it(svc, clie
 
 def test_tester_records_can_be_removed(svc, client, tmp_path):
     client.post("/erp/ui/vendors", json={"name": "Temp", "country": "IN", "gstin": TESTER_GSTIN})
-    assert svc.erp_db.counts()["vendors"] == 13
+    assert svc.erp_db.counts()["vendors"] == 16
     client.post("/erp/ui/reset", json={})
-    assert svc.erp_db.counts() == {"vendors": 12, "purchase_orders": 17, "receipts": 20}
+    assert svc.erp_db.counts() == {"vendors": 15, "purchase_orders": 20, "receipts": 21}
 
 
 def test_erp_pages_and_documents_are_served(client, svc):
@@ -246,7 +255,7 @@ def test_erp_pages_and_documents_are_served(client, svc):
     assert client.post("/erp/ui/read/po", data={"file": (io.BytesIO(b"hello"), "x.pdf")},
                        content_type="multipart/form-data").status_code == 400
     st = client.get("/api/erp/status").get_json()
-    assert st["error"] is None and st["records"]["purchaseOrders"] == 16
+    assert st["error"] is None and st["records"]["purchaseOrders"] == 19
 
 
 def test_deployed_mode_desk_reads_its_erp_over_http(tmp_path):
@@ -294,3 +303,24 @@ def test_goods_cannot_be_received_against_another_buyers_order_even_if_open(tmp_
     db._x("UPDATE purchase_orders SET status='open' WHERE po_number='GEMC-511687772029047'")
     with pytest.raises(ErpError, match="another buyer"):
         db.create_receipt({"po_number": "GEMC-511687772029047", "lines": [{"line_no": 1, "received": 1, "accepted": 1}]})
+
+
+def test_test_companies_let_a_real_invoice_be_tested(svc, client, tmp_path):
+    """A tester adds the buyer printed on a real invoice, then a PO ordered by it."""
+    db = svc.erp_db
+    with pytest.raises(ErpError, match="name"):
+        db.create_company({"country": "US"})
+    with pytest.raises(ErpError, match="Country"):
+        db.create_company({"name": "X", "country": "JP"})
+    with pytest.raises(ErpError, match="GSTIN"):
+        db.create_company({"name": "Y", "country": "IN", "tax_id": "29ABCDE1234F1Z5"})
+    c = client.post("/erp/ui/companies", json={"name": "Leo Burnett USA", "country": "US"}).get_json()
+    assert c["code"] == "T04" and c["currency"] == "USD" and c["source"] == "tester"
+    v = db.create_vendor({"name": "Eller Media Company", "country": "US"})
+    p = db.create_po({"vendor_id": v["vendor_id"], "entity": "T04", "currency": "USD", "kind": "services",
+                      "lines": [{"description": "Bulletin space", "qty_ordered": 1, "unit_price": 1750}]})
+    assert p["entity"] == "T04"
+    names = {x["id"]: x["name"] for x in client.get("/erp/ui/companies").get_json()}
+    assert names["T04"] == "Leo Burnett USA" and names["IN"].startswith("Kaveri")
+    db.reset_tester_records()
+    assert db.company("T04") is None and db.company("T01")  # the real-invoice pack stays

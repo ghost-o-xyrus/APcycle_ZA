@@ -46,7 +46,8 @@ def test_index_and_static(client):
 
 def test_samples(client):
     s = client.get("/api/samples").json["samples"]
-    assert len(s) == 25 and {"id", "title", "group", "scanned", "vendor"} <= set(s[0])
+    assert len(s) == 30 and {"id", "title", "group", "scanned", "vendor"} <= set(s[0])
+    assert sum(1 for x in s if x.get("real")) == 5  # real public documents D1-D5
     assert s[0]["expect"] in ("APPROVE", "HOLD", "REJECT")  # the designed outcome, for grading runs
     assert "truth" not in s[0] and "file" not in s[0]  # the field-level answer key stays on the server
 

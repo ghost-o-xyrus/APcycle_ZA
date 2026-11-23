@@ -9,6 +9,7 @@
   POST /erp/api/record/v1/purchaseOrder/<id>/!transform/itemReceipt   receive goods against a PO
   GET  /erp/api/record/v1/itemReceipt                list
   GET  /erp/api/record/v1/itemReceipt/<id>
+  GET  /erp/api/record/v1/subsidiary                 the companies AP pays for (the group's, plus test companies)
 
 Every call needs `Authorization: Bearer <token>`: an integration token issued to the AP product,
 as a NetSuite administrator issues one to an integration record. Wrong or missing token: 401.
@@ -62,6 +63,18 @@ def receipt_json(r: dict) -> dict:
             "document": f"/erp/docs/{r['doc_id']}" if r.get("doc_id") else None,
             "item": {"items": [{"orderLine": l["line_no"], "quantityReceived": l["received"],
                                 "quantityAccepted": l["accepted"]} for l in r["lines"]]}}
+
+
+def subsidiary_json(c: dict) -> dict:
+    return {"id": c["code"], "name": c["name"], "country": c["country"], "taxId": c.get("tax_id") or None,
+            "currency": c["currency"], "address": c.get("address") or "", "source": c.get("source", "seed")}
+
+
+def subsidiaries(db: ErpDB) -> list:
+    from ..company import ENTITIES
+    group = [{"code": e.code, "name": e.name, "country": e.country, "tax_id": e.tax_id, "currency": e.currency,
+              "address": e.address, "source": "seed"} for e in ENTITIES.values()]
+    return [subsidiary_json(c) for c in group + db.companies()]
 
 
 def listing(items):
@@ -136,6 +149,17 @@ def make_api(db: ErpDB, on_call=None) -> Blueprint:
                                           "accepted": i.get("quantityAccepted", i.get("quantityReceived"))}
                                          for i in (b.get("item") or {}).get("items", [])]}, actor="api")
         return jsonify(receipt_json(r)), 201
+
+    @bp.get("/subsidiary")
+    def subs():
+        return jsonify(listing(subsidiaries(db)))
+
+    @bp.post("/subsidiary")
+    def new_sub():
+        b = request.get_json(silent=True) or {}
+        c = db.create_company({"name": b.get("name"), "country": b.get("country"), "tax_id": b.get("taxId"),
+                               "currency": b.get("currency"), "address": b.get("address")}, actor="api")
+        return jsonify(subsidiary_json(c)), 201
 
     @bp.get("/itemReceipt")
     def receipts():

@@ -249,6 +249,7 @@ class Repo:
         self.grns = list(grns)
         self.ledger = list(ledger)
         self.approved_files = {}  # sha256 -> earlier approved run (filled by the service)
+        self.entities = dict(ENTITIES)  # companies AP pays for: the group's, plus the ERP's test companies
 
     # --- lookups ---
     def vendor_by_gstin(self, gstin):
